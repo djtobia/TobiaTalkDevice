@@ -86,14 +86,14 @@ Or: `npx wrangler kv key get --binding MSGS --remote log`.
    - Board: **ESP32S3 Dev Module**
    - USB CDC On Boot: **Enabled**
    - Flash Mode **QIO 80MHz**, Flash Size **4MB**
-   - Partition Scheme: **Huge APP (3MB No OTA/1MB SPIFFS)**
+   - Partition Scheme: **Minimal SPIFFS (1.9MB APP with OTA/190KB SPIFFS)** (two app slots, needed for over-the-air updates later)
    - PSRAM: **OPI PSRAM** for V2, **QSPI PSRAM** for V1
 5. Plug in the board, pick its port, Upload. If upload fails, hold BOOT while plugging in
    the USB cable (download mode), then retry.
 
 Command-line equivalent (arduino-cli ships inside Arduino IDE):
 ```bash
-arduino-cli compile --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=4M,FlashMode=qio,PartitionScheme=huge_app,PSRAM=opi firmware/TobiaTalk
+arduino-cli compile --fqbn esp32:esp32:esp32s3:CDCOnBoot=cdc,FlashSize=4M,FlashMode=qio,PartitionScheme=min_spiffs,PSRAM=opi firmware/TobiaTalk
 ```
 
 ### 3. Set up each board (no reflashing per household)
