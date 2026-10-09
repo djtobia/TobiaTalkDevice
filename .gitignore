@@ -1,0 +1,18 @@
+# Secrets (real family password + server URL)
+secrets.h
+
+# Server tooling
+node_modules/
+.wrangler/
+.dev.vars
+
+# Arduino / build output
+build/
+*.bin
+*.elf
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,12 @@
+name = "family-relay"
+main = "src/worker.js"
+compatibility_date = "2025-01-01"
+
+# Create with: npx wrangler kv namespace create MSGS   (paste the id below)
+[[kv_namespaces]]
+binding = "MSGS"
+id = "bf65b08c707f41b7893c314fbfe64287"
+
+# Secrets (not stored here):
+#   npx wrangler secret put FAMILY_KEY      shared password flashed into every board
+#   npx wrangler secret put OPENAI_API_KEY  for speech-to-text
