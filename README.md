@@ -198,12 +198,18 @@ Check current limits on Cloudflare's pricing pages before relying on these numbe
 ## Battery
 
 The board has a LiPo charger and a power path (ETA6098). Findings from measuring a 3000 mAh battery:
-- The voltage pin (GPIO4, 1:2 divider, ADC1 ch3) reads ~4.17 V on USB with **no** battery, so the indicator stays
-  hidden until a reading clearly below that (< 4.05 V) or a plug/unplug step proves a battery is attached.
+- The voltage pin (GPIO4, 1:2 divider, ADC1 ch3) reads ~4.17 V on USB with **no** battery, which is the same as a
+  **full** battery on USB, so voltage alone cannot tell "no battery" from "full battery". The indicator therefore shows
+  only when the board knows it has a battery: the **"A battery is installed" checkbox on the setup page** (pre-ticked on
+  re-setup), or automatically once it has proven one (a reading < 4.05 V, a plug/unplug step, or still running after the
+  cable came out). That is remembered in flash (namespace `battery`, key `seen`).
 - **Charging inflates the reading** (~65 mV) and the board's own draw deflates it. There is no charge-status or USB-detect
   pin on a GPIO (the charger's STAT pin only drives the red charge LED), so the firmware watches for the sharp
   60-70 mV step when USB is plugged/unplugged (everyday noise is < 20 mV), tracks "plugged in / on battery", and
   subtracts the learned offset while plugged in. Loads (speaker, recording, uploads) are ignored for a few seconds.
+- Near full the offset fades to zero (charging current tapers and then stops), the charging bolt shows only below
+  ~4.15 V, and no step is produced when you unplug a board whose charger has finished: a reading that stays 35+ mV
+  under its plugged-in peak for a minute is taken as "unplugged".
 - Assumes "plugged in" at boot; a board started from battery reads slightly low until the first plug/unplug.
 - The firmware sets the **power-latch pin (GPIO17)** at startup. Without it a battery-only board shuts off when PWR is released.
 - Battery debugging: set `BATT_DEBUG` to 1 in `user_app.cpp` to log the voltage every 2 s and keep it in flash

@@ -467,13 +467,28 @@ static int battery_percent(int mv)
 // subtract the offset learned from the last step and show a charging bolt.
 #define BATT_STEP_MV 45                 // a jump this big, holding for the next reading, is a plug/unplug
 static bool g_usb = true;               // assume plugged in at boot; the first step corrects it
+static bool g_usb_confirmed = false;    // true only after a plug-in step was actually seen: the charging bolt needs this
 static int g_offset_mv = 65;
 static int bat_win[6];                  // last few 2-second readings
 static int bat_win_n = 0;
 static bool bat_cand = false;           // a possible step waiting for confirmation
 static int bat_cand_mv = 0;
 static uint32_t g_bat_quiet_until = 0;
-static bool g_batt_usb_shown = true;
+static bool g_batt_usb_shown = true;    // whether the charging bolt is currently drawn
+static int bat_peak = 0;                // highest reading seen since "plugged in" was decided
+static int bat_decline = 0;             // consecutive readings well below that peak (an unplug leaves no step once charging has stopped)
+
+// A full battery on USB reads ~4.17 V, the same as no battery at all, so a battery can only be *proven* by a
+// low reading, a plug/unplug step, or an unplug that did not turn the board off. Remember that across reboots.
+static void battery_mark_seen()
+{
+  if (g_batt_seen) return;
+  g_batt_seen = true;
+  Preferences p;
+  p.begin("battery", false);
+  p.putBool("seen", true);
+  p.end();
+}
 
 // Audio playback, recording and uploads load the battery and move the voltage; ignore it and re-baseline after.
 static void battery_note_activity()
@@ -481,6 +496,7 @@ static void battery_note_activity()
   g_bat_quiet_until = millis() + 4000;
   bat_win_n = 0;
   bat_cand = false;
+  bat_decline = 0;
 }
 
 // Draws the indicator. The e-paper redraws the whole screen on any change, so the label only changes
@@ -488,19 +504,23 @@ static void battery_note_activity()
 static void battery_show(int mv_avg)
 {
   bool present = g_batt_seen && mv_avg >= 3000 && mv_avg <= 4400;
-  int raw = (g_usb && mv_avg >= 4180) ? 100 : battery_percent(g_usb ? mv_avg - g_offset_mv : mv_avg);
+  // The charging offset fades to zero as the pin approaches the charger's top level (4.2 V): that is
+  // the end of charging, when current (and so the offset) tapers off, and after the charger stops it is gone.
+  int offset = g_usb ? g_offset_mv * constrain(4200 - mv_avg, 0, 150) / 150 : 0;
+  int raw = (g_usb && mv_avg >= 4170) ? 100 : battery_percent(mv_avg - offset);
+  bool bolt = g_usb && g_usb_confirmed && mv_avg < 4150;   // seen plugging in and below the charger's final stage
   int pct;
   if (!present) pct = -1;
-  else if (g_batt_pct >= 0 && abs(raw - g_batt_pct) < 4 && g_usb == g_batt_usb_shown) pct = g_batt_pct;
+  else if (g_batt_pct >= 0 && abs(raw - g_batt_pct) < 4 && bolt == g_batt_usb_shown) pct = g_batt_pct;
   else pct = (raw + 2) / 5 * 5;
-  if (pct == g_batt_pct && g_usb == g_batt_usb_shown) return;
+  if (pct == g_batt_pct && bolt == g_batt_usb_shown) return;
   g_batt_pct = pct;
-  g_batt_usb_shown = g_usb;
+  g_batt_usb_shown = bolt;
   if (!example_lvgl_lock(-1)) return;
   if (pct < 0) {
     lv_obj_add_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
   } else {
-    const char *sym = g_usb ? LV_SYMBOL_CHARGE
+    const char *sym = bolt ? LV_SYMBOL_CHARGE
                     : pct > 87 ? LV_SYMBOL_BATTERY_FULL : pct > 62 ? LV_SYMBOL_BATTERY_3
                     : pct > 37 ? LV_SYMBOL_BATTERY_2 : pct > 12 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
     char text[24];
@@ -526,11 +546,14 @@ static void battery_sample()
       if (abs(mv - bat_cand_mv) < 20) {                 // it held: a real plug / unplug, not a load spike
         int step = bat_cand_mv - avg;
         g_usb = step > 0;
+        g_usb_confirmed = g_usb;                        // an observed plug-in (not just the boot assumption)
         g_offset_mv = (g_offset_mv + constrain(abs(step), 30, 120)) / 2;
-        g_batt_seen = true;                             // a battery-less board loses power on unplug, so a step proves one
+        battery_mark_seen();                            // a battery-less board loses power on unplug, so a step proves one
         bat_win[0] = bat_cand_mv;
         bat_win[1] = mv;
         bat_win_n = 2;
+        bat_peak = bat_cand_mv;
+        bat_decline = 0;
         Serial.printf("[battery] step %+d mV -> %s, offset %d mV\n", step, g_usb ? "plugged in" : "on battery", g_offset_mv);
         battery_show((bat_cand_mv + mv) / 2);
         return;
@@ -544,11 +567,28 @@ static void battery_sample()
     for (int i = 0; i < 5; i++) bat_win[i] = bat_win[i + 1];
     bat_win[5] = mv;
   }
-  if (mv >= 3000 && mv <= 4050) g_batt_seen = true;    // below the ~4.17 V a battery-less board reads on USB
+  if (mv >= 3000 && mv <= 4050) battery_mark_seen();   // below the ~4.17 V a battery-less board reads on USB
   if (bat_win_n >= 2) {
     int sum = 0;
     for (int i = 0; i < bat_win_n; i++) sum += bat_win[i];
-    battery_show(sum / bat_win_n);
+    int avg = sum / bat_win_n;
+    if (g_usb) {
+      // While plugged in the reading only goes up or holds. If it stays 20+ mV under its peak for ~45 s
+      // the cable is out, even though no step was seen (no current flows once the charger has finished).
+      if (avg > bat_peak) bat_peak = avg;
+      if (avg <= bat_peak - 20) {            // a full battery shows only a small drop (no charge current to lose)
+        if (++bat_decline >= 22) {           // ~45 s
+          g_usb = false;
+          g_usb_confirmed = false;
+          bat_decline = 0;
+          battery_mark_seen();               // still running after the cable came out: there is a battery
+          Serial.printf("[battery] steady decline from %d to %d mV -> on battery\n", bat_peak, avg);
+        }
+      } else {
+        bat_decline = 0;
+      }
+    }
+    battery_show(avg);
   }
 }
 
@@ -606,6 +646,12 @@ static void app_task(void *arg)
   for (int i = 0; i < 40 && !online(); i++) vTaskDelay(pdMS_TO_TICKS(500));
   uint32_t last_poll = 0, pwr_t0 = 0, offline_since = millis(), last_batt = 0, last_dbg = 0;
   bool pwr_was_down = false, pwr_consumed = false;
+  {
+    Preferences p;                       // has this board ever proven it has a battery?
+    p.begin("battery", true);
+    g_batt_seen = p.getBool("seen", false);
+    p.end();
+  }
   g_offline = !online();                 // the 20 s connect attempt above already failed: say so right away
   show_idle();
 

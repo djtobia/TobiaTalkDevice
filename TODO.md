@@ -16,7 +16,7 @@ Status: server deployed and tested live (`npm test` for the local tests). Firmwa
 - Message ids survive a history clear (server `seq` counter).
 
 ## Before shipping boards
-- Back up `signing/ota_private.pem` and `signing/admin_key.txt` (they are NOT in git). Also keep the family password.
+- ~~Back up `signing/ota_private.pem`, `signing/admin_key.txt` and the family password~~ (done; they are NOT in git).
 - Overnight/multi-day run with two boards side by side (in progress): dropped messages? stuck screen? Wi-Fi recovery?
 - Test the "wrong Wi-Fi" path once more on the final build (done on an earlier build): bad password -> "No WiFi" ->
   hold PWR 5 s -> portal -> fix.
@@ -30,6 +30,11 @@ Status: server deployed and tested live (`npm test` for the local tests). Firmwa
 - Flash every board over USB once with the final firmware at v1 (the version tag shows in the screensaver corner).
 
 ## Next
+- **When the battery-equipped boards arrive:** every board will have a battery, so drop the "A battery is installed" checkbox
+  from the setup page and make "battery present" the built-in default (e.g. a `BATTERY_INSTALLED 1` constant in
+  `user_app.cpp`; keep the plug/unplug tracking). Consequence: a board with NO battery would then show a bogus ~100%
+  (USB with no battery reads ~4.17 V, the same as a full battery), so the two current test boards need either a
+  battery too or a one-off build with the constant set to 0.
 - Verify which TLS mode a board is in (verified vs fallback): add a serial log line.
 - Queue of unplayed messages instead of only the newest.
 - Several saved Wi-Fi networks per device.

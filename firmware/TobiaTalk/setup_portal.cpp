@@ -2,6 +2,7 @@
 #include <WiFi.h>
 #include <WebServer.h>
 #include <DNSServer.h>
+#include <Preferences.h>
 #include "settings.h"
 
 static String html_escape(const String &in)
@@ -52,6 +53,14 @@ void setup_portal_run(const char *ap_name)
   WiFi.softAP(ap_name);                            // open network, no password
   IPAddress ip = WiFi.softAPIP();
 
+  bool batt_on;                                    // pre-tick the box if this board already knows it has a battery
+  {
+    Preferences bp;
+    bp.begin("battery", true);
+    batt_on = bp.getBool("seen", false);
+    bp.end();
+  }
+
   DNSServer dns;
   dns.start(53, "*", ip);                          // every hostname -> us, triggers the phone's popup
   WebServer web(80);
@@ -68,6 +77,8 @@ void setup_portal_run(const char *ap_name)
         "<p><a href=/rescan>List empty or missing yours? Rescan (may pause a few seconds)</a></p>"
         "<label>...or type it if it's not listed</label><input name=ssid_manual>"
         "<label>Wi-Fi password</label><input name=pass type=password>"
+        "<label style='display:block;margin:6px 0 18px'><input type=checkbox name=batt value=1 "
+        "style='width:auto;margin:0 8px 0 0'" + String(batt_on ? " checked" : "") + "> A battery is installed</label>"
         "<button>Save</button></form>";
     return h;
   };
@@ -84,6 +95,10 @@ void setup_portal_run(const char *ap_name)
     s.name = clean_name(web.arg("name"));
     if (s.ssid.length() == 0) { web.send(400, "text/plain", "Pick a network"); return; }
     settings_save(s);
+    Preferences bp;                                // "A battery is installed": shows the battery indicator
+    bp.begin("battery", false);
+    bp.putBool("seen", web.hasArg("batt"));
+    bp.end();
     web.send(200, "text/html",
              "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
              "<body style='font-family:sans-serif;text-align:center;margin-top:60px'>"
