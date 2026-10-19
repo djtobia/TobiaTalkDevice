@@ -948,7 +948,7 @@ void user_ui_init(void)
       if (shaft || head) lv_canvas_set_px(arrow_canvas, px, py, lv_color_black());
     }
   }
-  lv_obj_set_pos(arrow_canvas, 170, 113);     // same line as "Hold to talk" (y 112..134), right edge toward BOOT
+  lv_obj_set_pos(arrow_canvas, 170, 139);     // one text line (26 px) below "Hold to talk" (y 112..134), where the BOOT button sits
   lv_obj_add_flag(arrow_canvas, LV_OBJ_FLAG_HIDDEN);
 
   off_label = lv_label_create(src_ui.screen);
