@@ -16,3 +16,8 @@ build/
 Thumbs.db
 .vscode/
 .idea/
+
+# OTA signing: private key and admin password never leave this machine
+signing/
+*.pem
+!firmware/TobiaTalk/ota_public.pem

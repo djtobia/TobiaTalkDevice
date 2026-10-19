@@ -22,6 +22,9 @@
 #include "secrets.h"
 #include "settings.h"
 #include "setup_portal.h"
+#include "ota.h"
+#include "version.h"
+#include <time.h>
 
 // Implemented in TobiaTalk.ino
 bool example_lvgl_lock(int timeout_ms);
@@ -45,12 +48,19 @@ static lv_color_t heart_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(80, 70)];
 static lv_obj_t *envelope_canvas = NULL;
 static lv_color_t envelope_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(80, 56)];
 static lv_obj_t *foot_label = NULL;     // small line at the bottom of the screen
+static lv_obj_t *corner_label = NULL;   // small tag in the top-right corner (firmware version)
 enum Icon { ICON_NONE, ICON_HEART, ICON_ENVELOPE };
 static uint32_t last_activity = 0;      // when the send screen was last shown (for the screensaver)
 static int16_t *mono = NULL;            // 16 kHz mono PCM, lives in PSRAM
 static Settings g_set;                  // Wi-Fi + this person's name (from flash)
 static int g_last_id = 0;
 static bool g_first_poll = true;
+static int g_fw_offer_version = 0;      // newest firmware the server will give this board (0 = none)
+static size_t g_fw_offer_size = 0;
+static int g_ota_failed_version = 0;    // a version that failed to install is not retried for an hour...
+static uint32_t g_ota_retry_after = 0;  // ...but a different (newer) version is tried right away
+static int g_tls_fail = 0;
+static bool g_tls_insecure = false;
 
 static int g_pending_id = 0;            // newest unseen message from someone else
 static bool g_pending_heart = false;
@@ -63,7 +73,8 @@ static Msg hist[5];                     // newest first
 static int hist_n = 0, hist_i = 0;
 static uint32_t hist_fetched = 0, view_deadline = 0;
 
-static void set_status(const char *top, const char *bottom, Icon icon = ICON_NONE, const char *foot = NULL)
+static void set_status(const char *top, const char *bottom, Icon icon = ICON_NONE, const char *foot = NULL,
+                       const char *corner = NULL)
 {
   if (example_lvgl_lock(-1)) {
     lv_label_set_text(src_ui.screen_label_1, top);
@@ -77,6 +88,12 @@ static void set_status(const char *top, const char *bottom, Icon icon = ICON_NON
       lv_obj_clear_flag(foot_label, LV_OBJ_FLAG_HIDDEN);
     } else {
       lv_obj_add_flag(foot_label, LV_OBJ_FLAG_HIDDEN);
+    }
+    if (corner) {
+      lv_label_set_text(corner_label, corner);
+      lv_obj_clear_flag(corner_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(corner_label, LV_OBJ_FLAG_HIDDEN);
     }
     example_lvgl_unlock();
   }
@@ -107,7 +124,9 @@ static void show_idle()
 static void show_saver()
 {
   view = V_SAVER;
-  set_status("Tobia Talk", "Device", ICON_HEART, g_set.name.c_str());
+  char version[12];
+  snprintf(version, sizeof(version), "v%d", FW_VERSION);
+  set_status("Tobia Talk", "Device", ICON_HEART, g_set.name.c_str(), version);
 }
 
 static void format_age(char *out, size_t n, uint32_t s)
@@ -123,13 +142,37 @@ static void wifi_start()
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
   WiFi.begin(g_set.ssid.c_str(), g_set.pass.c_str());
+  configTime(0, 0, "pool.ntp.org", "time.cloudflare.com");   // clock is needed to check certificates
 }
 
-// TODO: verify the server certificate instead of setInsecure(); until then the
-// family key could be sniffed by someone running a fake access point.
+static bool time_valid() { return time(nullptr) > 1700000000; }   // SNTP has set the clock
+
+// Certificates are only checked once the clock is right. If verified connections keep
+// failing (e.g. the server's CA moved out of the built-in list) we fall back to
+// unverified TLS until the next reboot, so boards stay reachable for updates.
+static void tls_setup(WiFiClientSecure &tls)
+{
+  if (time_valid() && !g_tls_insecure) tls.useBuiltinCACertBundle();
+  else tls.setInsecure();
+}
+
+// HTTP status < 0 means the connection itself failed (DNS, TLS, timeout).
+static void note_transport(int code)
+{
+  if (code >= 0) { g_tls_fail = 0; return; }
+  if (++g_tls_fail >= 3 && time_valid()) g_tls_insecure = true;
+}
+
+static String name_param()
+{
+  String n = g_set.name;
+  n.replace(" ", "%20");
+  return n;
+}
+
 static bool begin_request(HTTPClient &http, WiFiClientSecure &tls, const String &path)
 {
-  tls.setInsecure();
+  tls_setup(tls);
   http.setTimeout(15000);
   if (!http.begin(tls, String(SERVER_URL) + path)) return false;
   http.addHeader("x-family-key", FAMILY_KEY);
@@ -140,12 +183,18 @@ static void poll_messages()
 {
   WiFiClientSecure tls;
   HTTPClient http;
-  if (!begin_request(http, tls, "/messages?since=" + String(g_last_id))) return;
-  if (http.GET() != 200) { http.end(); return; }
+  String path = "/messages?since=" + String(g_last_id) + "&v=" + String(FW_VERSION) + "&me=" + name_param();
+  if (!begin_request(http, tls, path)) return;
+  int code = http.GET();
+  note_transport(code);
+  if (code != 200) { http.end(); return; }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, http.getString());
   http.end();
   if (err) return;
+  ota_mark_valid();                               // a new firmware proved it can talk to the server
+  g_fw_offer_version = doc["fw"]["version"] | 0;  // newer signed firmware on offer (0 = none)
+  g_fw_offer_size = doc["fw"]["size"] | 0;
   bool changed = false;
   for (JsonObject m : doc["messages"].as<JsonArray>()) {
     int id = m["id"];
@@ -285,6 +334,20 @@ static bool play_message(int id, const char *from)
   return true;
 }
 
+// The signature, not TLS, is what makes a download trustworthy, so a failed verified
+// connection is retried once unverified (otherwise a changed CA could block the fix).
+static bool run_ota(String &err)
+{
+  for (int attempt = 0; attempt < 2; attempt++) {
+    WiFiClientSecure tls;
+    if (attempt == 0) tls_setup(tls);
+    else tls.setInsecure();
+    if (ota_install(tls, SERVER_URL, FAMILY_KEY, g_fw_offer_version, g_fw_offer_size, err)) return true;
+    if (!(err == "connect" || err.startsWith("http -"))) break;   // only retry connection failures
+  }
+  return false;
+}
+
 static void enter_setup()
 {
   set_status("Join WiFi", "TobiaTalk");
@@ -387,6 +450,23 @@ static void app_task(void *arg)
     if (view == V_HISTORY && millis() > view_deadline) show_idle();
     if (view == V_IDLE && !g_pending_id && !shown_offline && millis() - last_activity > SAVER_MS) show_saver();
 
+    // Automatic update: only while idle on the screensaver, nothing waiting, and online.
+    if (g_fw_offer_version > FW_VERSION && view == V_SAVER && !g_pending_id && online() &&
+        (g_fw_offer_version != g_ota_failed_version || millis() > g_ota_retry_after)) {
+      set_status("Updating", "Do not unplug");
+      String err;
+      if (!run_ota(err)) {                // success restarts the board and never gets here
+        set_status("Update failed", err.c_str());
+        vTaskDelay(pdMS_TO_TICKS(4000));
+        g_ota_failed_version = g_fw_offer_version;
+        g_ota_retry_after = millis() + 60UL * 60 * 1000;
+        show_saver();
+      }
+    }
+
+    // A just-installed firmware that cannot reach the server within 3 minutes goes back to the old one.
+    if (millis() > 180000 && ota_pending_verify()) ota_rollback();
+
     if (online()) {
       offline_since = millis();
       if (shown_offline) { shown_offline = false; show_idle(); }
@@ -485,6 +565,15 @@ void user_ui_init(void)
   lv_obj_set_style_text_color(foot_label, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_text_align(foot_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_add_flag(foot_label, LV_OBJ_FLAG_HIDDEN);
+
+  corner_label = lv_label_create(src_ui.screen);
+  lv_label_set_text(corner_label, "");
+  lv_obj_set_pos(corner_label, 144, 4);
+  lv_obj_set_size(corner_label, 52, 18);
+  lv_obj_set_style_text_font(corner_label, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_text_color(corner_label, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_text_align(corner_label, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_add_flag(corner_label, LV_OBJ_FLAG_HIDDEN);
 
   xTaskCreatePinnedToCore(app_task, "app_task", 16 * 1024, NULL, 3, NULL, 0);
 }

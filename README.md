@@ -22,6 +22,8 @@ only makes outgoing HTTPS requests to the Worker, which stores messages for a wh
 | `family-relay/` | The server: one Cloudflare Worker (`src/worker.js`), tests, deploy config |
 | `firmware/TobiaTalk/` | The board firmware (Arduino sketch) |
 | `firmware/README.md` | Firmware build/usage details |
+| `tools/release.mjs` | Builds, signs and publishes a firmware update (see "Remote firmware updates") |
+| `signing/` | **Git-ignored, local only:** `ota_private.pem` (signing key) and `admin_key.txt` (admin password). Back these up! |
 | `TODO.md` | What is done and what is left |
 
 ## How it behaves
@@ -104,14 +106,63 @@ opens a Wi-Fi network named **TobiaTalk**. On a phone, join it; the setup page p
 spaces, up to 15), Save. The board restarts and joins. Do this at the recipient's house, or
 ahead of time with their Wi-Fi details.
 
-## Server API (all requests need header `x-family-key: <FAMILY_KEY>`)
+## Remote firmware updates (OTA)
+
+Boards update themselves: every board reports its firmware version in its normal check-in; if the
+server offers a newer one the board downloads it, checks the **signature**, installs it and restarts.
+This happens only when the board is idle on the screensaver, has no message waiting and is online.
+The version shows in the top-right corner of the screensaver (e.g. `v1`).
+
+Safety layers, all tested on real boards:
+- **Signed images.** Boards only accept firmware signed with your private key (ECDSA P-256, SHA-256);
+  the public key is compiled in (`firmware/TobiaTalk/ota_public.h`). A tampered file is refused
+  ("Update failed - Signature Verification Failed") and the board keeps running.
+- **Separate admin password.** Publishing needs `x-admin-key`; the family password cannot publish.
+- **Automatic rollback.** A newly installed image must reach the server within 3 minutes (or not crash);
+  otherwise the bootloader returns to the previous image. Tested with a deliberately crashing build.
+- **Staged rollout.** Publish to named boards first, then widen.
+- **Retry rules.** A version that fails to install is not retried for an hour; a different version is tried at once.
+
+### One-time setup (already done for this project)
+```bash
+pip install cryptography                     # used by the signing tool
+python <esp32-core>/tools/bin_signing.py --generate-key ecdsa-p256 --out signing/ota_private.pem
+python <esp32-core>/tools/bin_signing.py --extract-pubkey signing/ota_private.pem --out firmware/TobiaTalk/ota_public.pem
+# generate an admin password, save it to signing/admin_key.txt, and set it on the server:
+cd family-relay && npx wrangler secret put ADMIN_KEY && npx wrangler deploy
+```
+`firmware/TobiaTalk/build_opt.h` (`-DUPDATE_SIGN`) turns on signature checking in the build. The
+firmware must be flashed over USB **once** with the public key inside; after that updates are remote.
+If you ever lose `signing/ota_private.pem`, boards can no longer be updated remotely: make a new key
+and re-flash every board over USB.
+
+### Publishing an update
+```bash
+node tools/release.mjs --only Dylan      # build, sign, publish to just the named board(s) (staged)
+# ... watch that board update itself and look fine, then:
+node tools/release.mjs rollout --all     # offer it to everyone
+node tools/release.mjs                   # (or publish straight to everyone)
+node tools/release.mjs status            # what the server is offering
+```
+The tool bumps `FW_VERSION` in `firmware/TobiaTalk/version.h` itself. Versions only go up on the server
+(it refuses a lower number). To reset the numbering during testing, delete the stored versions:
+`npx wrangler kv key delete --binding MSGS --remote fwmeta` (and `fw:<n>`), and set `FW_VERSION` back
+in `version.h` before flashing boards over USB.
+
+Do not host firmware binaries anywhere public: `secrets.h` (the family password) is compiled into them.
+
+## Server API (all requests need header `x-family-key: <FAMILY_KEY>`, except `/admin/*` which needs `x-admin-key`)
 
 | Request | Purpose |
 |---|---|
 | `POST /send?from=Name` body = raw PCM | Voice message. 16 kHz, 16-bit little-endian, mono. 5-20 s (else 400/413). |
 | `POST /send?from=Name&type=heart` | Heart, no body. |
 | `POST /send?from=Name&type=text` body = UTF-8 text | Text (max 200 chars). **Firmware does not display this yet.** |
-| `GET /messages?since=<id>` | Messages newer than id (what boards poll). |
+| `GET /messages?since=<id>&v=<fwversion>&me=<Name>` | Messages newer than id (what boards poll). If a newer firmware is on offer for that board the reply also has `fw: {version, size}`. |
+| `GET /firmware?version=<n>` | The signed firmware image. |
+| `POST /admin/firmware?version=<n>&only=A,B` | Publish a signed image (admin key). `only` omitted/`all` = everyone. Versions must increase (`force=1` overrides). |
+| `POST /admin/rollout?only=A,B` or `only=all` | Change who is offered the current version (admin key). |
+| `GET /admin/status` | Current firmware offer (admin key). |
 | `GET /messages?last=N` | Last N (max 20), oldest first. |
 | `GET /audio?id=<id>` | Raw PCM for a voice message (404 once expired). |
 
@@ -140,6 +191,6 @@ come from Waveshare's `08_Audio_Test` Arduino example
 The app logic (`user_app.cpp`, `settings.*`, `setup_portal.*`) and the Worker are this project's own.
 
 ## Known gaps
-See `TODO.md`. Main ones: the board does not verify the server's TLS certificate yet; only the newest
-unplayed message is announced; one saved Wi-Fi network per board; mic gain untested on real hardware;
-the firmware has not yet been verified on a physical board.
+See `TODO.md`. Main ones: only the newest unplayed message is announced; one saved Wi-Fi network per
+board; the board checks the server's certificate once its clock is set but falls back to an unchecked
+connection after 3 failures (firmware downloads are protected by their signature either way).

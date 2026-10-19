@@ -1,40 +1,40 @@
 # TobiaTalk TODO
 
-Status: server deployed and tested live (`npm test` for the local tests). Firmware
-compiles (see firmware/README.md for build settings) but has NOT run on a board yet.
+Status: server deployed and tested live (`npm test` for the local tests). Firmware runs on two boards
+(both V2, non-touch). Both boards currently show v1; the server is offering no firmware.
 
-## Done
-- Server deployed: https://family-relay.djtobia.workers.dev (voice, heart, text types).
-- Per-person names, stored on the device, set in the setup portal (untested on hardware).
-- Wi-Fi setup portal: first boot, or hold PWR 5 s (untested on hardware).
-- History of the last 5 messages (PWR tap), replay with BOOT tap (untested on hardware).
-- Heart: tap BOOT. Tested on two boards: heart and envelope icons look good.
-- Screensaver (15 s idle, heart + "Tobia Talk Device") and envelope icon for new messages; tap wakes to the send screen.
-- Firmware built with the two-slot "Minimal SPIFFS" partition scheme so OTA updates are possible later.
+## Done and tested on hardware
+- Voice messages, hearts, history (last 5), envelope/heart icons, screensaver (15 s) with the version tag top-right.
+- Wi-Fi/name setup portal (hold PWR 5 s) and per-person names.
+- Remote firmware updates (OTA): signed images, separate admin password, staged rollout, automatic rollback,
+  rejection of a tampered image. See README "Remote firmware updates". Release tool: `tools/release.mjs`.
+- Certificate checking for HTTPS (needs the clock; falls back to unchecked after 3 failures so boards can still be fixed).
+- Message ids survive a history clear (server `seq` counter).
+
+## Before shipping boards
+- Back up `signing/ota_private.pem` and `signing/admin_key.txt` (they are NOT in git). Also keep the family password.
+- Test the "wrong Wi-Fi" path on one board: bad password -> "No WiFi / PWR 5s: setup" -> hold PWR 5 s -> portal.
+- Let two boards run for a few days (dropped messages? stuck screen? after a router restart?).
+- Clear test messages from the server before the family's boards go online:
+  `npx wrangler kv key delete --binding MSGS --remote log` (leave the `seq` key alone).
+- Print a one-page setup card for the box (4 steps: plug in, join "TobiaTalk" Wi-Fi, pick Wi-Fi + password + name, Save;
+  hold PWR 5 s to redo it).
+- 5 more TOUCH boards are coming: check each one's chip first (`esptool chip-id`) and Waveshare's pin differences;
+  Waveshare says examples are not interchangeable between hardware versions. The same firmware ignores touch,
+  so it should run, but verify before flashing.
 
 ## Next
-- First hardware bring-up: confirm display text fits, mic channel/gain, speaker volume,
-  button feel (tap vs hold threshold TAP_MS=400), LED color/visibility.
-  The two test messages already on the server ("Hi from Claude" text, a heart) should show in
-  the history view as a first check; the text one will look wrong until text display exists.
-  Delete them afterwards: `npx wrangler kv key delete --binding MSGS --remote log`.
-- First two boards are V2 (8 MB flash/8 MB PSRAM), NOT touch. 5 more TOUCH boards are coming: check their chip
-  (esptool chip-id) and Waveshare's pin differences before flashing; Waveshare says examples are not
-  interchangeable between hardware versions. The same firmware ignores touch, so it should run, but verify.
-- Verify TLS certificate (currently `setInsecure()`).
+- Verify which TLS mode a board is in (verified vs fallback): add a serial log line.
 - Queue of unplayed messages instead of only the newest.
 - Several saved Wi-Fi networks per device.
-- Git: single clean history is pending (staged on branch `clean`, then force-push); README and
-  doc edits not committed yet.
+- Setup page niceties: prefill the saved name, on-screen hint to open 192.168.4.1, optional setup-network password.
+- Mic channel/gain, speaker volume, LED color/visibility: tune with real use.
+- Git: history is clean (no node_modules); latest work is committed locally, push when ready.
 
 ## Ideas (not started)
 - **Text display + speech-to-text.** Show the `text` field on screen (smaller font, paging for
   long text); transcribe voice on the server in the background (OpenAI or Cloudflare Workers AI;
-  check current pricing). Falls back to audio-only if transcription fails.
-- **Remote firmware updates (OTA).** Boards pull a signed `firmware.bin` from the Worker. Needs:
-  separate admin upload key, signature check, real TLS verification first, rollback if the new
-  version can't reach the server, staged rollout (one board first), update only when idle/plugged in.
-  Do NOT host the binary publicly: `secrets.h` (family password) is compiled into it.
+  check current pricing). Falls back to audio-only if transcription fails. The server already has a `text` type.
 - **Typing alternatives for people who don't want to speak:**
   - Canned replies ("Love you", "On my way", "Call me", "Good night"): PWR scrolls, BOOT sends, goes
     out as a `text` message. Phrase list could come from the setup page or the server.
