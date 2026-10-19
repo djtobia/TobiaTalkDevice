@@ -85,7 +85,12 @@ export default {
     if (req.method === "GET" && url.pathname === "/messages") {
       const log = JSON.parse((await env.MSGS.get("log")) || "[]");
       const last = Number(url.searchParams.get("last") || 0);
-      if (last > 0) return json({ messages: log.slice(-Math.min(last, 20)).map(withAge) });
+      if (last > 0) {
+        // `exclude` leaves out one sender (a board's own name), so history only shows what others sent.
+        const exclude = url.searchParams.get("exclude");
+        const pool = exclude ? log.filter((m) => m.from !== exclude) : log;
+        return json({ messages: pool.slice(-Math.min(last, 20)).map(withAge) });
+      }
       const since = Number(url.searchParams.get("since") || 0);
       const out = { messages: log.filter((m) => m.id > since).map(withAge) };
       // Offer a firmware update only to boards that report an older version and are allowed to have it.

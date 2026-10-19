@@ -55,6 +55,16 @@ store.delete("log");
 const afterClear = await (await call("/send?from=Mom&type=heart", { method: "POST" })).json();
 assert.equal(afterClear.id, before + 1);
 
+// history can leave out one sender (a board's own messages)
+for (const who of ["Dad", "Mom", "Gran", "Mom"]) await call(`/send?from=${who}&type=heart`, { method: "POST" });
+const mine = await (await call("/messages?last=20&exclude=Mom")).json();
+assert.ok(mine.messages.length > 0 && mine.messages.every((m) => m.from !== "Mom"));
+const theirs = await (await call("/messages?last=20")).json();
+assert.ok(theirs.messages.some((m) => m.from === "Mom"));
+const lastTwo = await (await call("/messages?last=2&exclude=Mom")).json();   // filter first, then take the last N
+assert.equal(lastTwo.messages.length, 2);
+assert.ok(lastTwo.messages.every((m) => m.from !== "Mom"));
+
 // ---- firmware updates ----
 const admin = (path, init = {}, key = "adm") =>
   worker.fetch(new Request("https://x" + path, { ...init, headers: { "x-admin-key": key } }), env);

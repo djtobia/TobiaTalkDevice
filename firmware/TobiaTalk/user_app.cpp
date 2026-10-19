@@ -36,6 +36,8 @@ void example_lvgl_unlock(void);
 #define TAP_MS           400    // BOOT released sooner than this = tap (heart)
 #define SETUP_HOLD_MS    5000   // hold PWR this long to open the Wi-Fi/name setup portal
 #define SAVER_MS         15000  // idle this long -> screensaver
+#define OFFLINE_MS       20000  // Wi-Fi down this long -> "No WiFi" screen
+#define POWEROFF_HOLD_MS 10000  // hold PWR+BOOT this long -> power off (battery only); deliberate on purpose
 #define POLL_EVERY_MS   20000
 #define MONO_CAP_SAMPLES (16000 * 20)   // matches the server's 20 s limit
 
@@ -47,6 +49,8 @@ static lv_obj_t *heart_canvas = NULL;
 static lv_color_t heart_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(80, 70)];
 static lv_obj_t *envelope_canvas = NULL;
 static lv_color_t envelope_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(80, 56)];
+static lv_obj_t *mini_env_canvas = NULL;   // tiny envelope, bottom-right of the screensaver: unread message
+static lv_color_t mini_env_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(28, 20)];
 static lv_obj_t *foot_label = NULL;     // small line at the bottom of the screen
 static lv_obj_t *corner_label = NULL;   // small tag in the top-right corner (firmware version)
 enum Icon { ICON_NONE, ICON_HEART, ICON_ENVELOPE };
@@ -61,6 +65,9 @@ static int g_ota_failed_version = 0;    // a version that failed to install is n
 static uint32_t g_ota_retry_after = 0;  // ...but a different (newer) version is tried right away
 static int g_tls_fail = 0;
 static bool g_tls_insecure = false;
+static lv_obj_t *batt_label = NULL;     // top-left: battery symbol + percent, only when a battery is connected
+static int g_batt_pct = -2;             // last shown: -2 = not drawn yet, -1 = no battery
+static bool g_batt_seen = false;        // a battery-only voltage has been measured since boot
 
 static int g_pending_id = 0;            // newest unseen message from someone else
 static bool g_pending_heart = false;
@@ -74,9 +81,11 @@ static int hist_n = 0, hist_i = 0;
 static uint32_t hist_fetched = 0, view_deadline = 0;
 
 static void set_status(const char *top, const char *bottom, Icon icon = ICON_NONE, const char *foot = NULL,
-                       const char *corner = NULL)
+                       const char *corner = NULL, bool mini_env = false)
 {
   if (example_lvgl_lock(-1)) {
+    if (mini_env) lv_obj_clear_flag(mini_env_canvas, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(mini_env_canvas, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(src_ui.screen_label_1, top);
     lv_label_set_text(src_ui.screen_label_2, bottom);
     if (icon == ICON_HEART) lv_obj_clear_flag(heart_canvas, LV_OBJ_FLAG_HIDDEN);
@@ -103,13 +112,17 @@ static void set_led(bool on) { gpio_set_level((gpio_num_t)LED_PIN, on ? 0 : 1); 
 static bool button_down(int pin) { return gpio_get_level((gpio_num_t)pin) == 0; }
 static bool online() { return WiFi.status() == WL_CONNECTED; }
 
+static bool g_offline = false;          // Wi-Fi has been down long enough to tell the user
+
 // The "send a message" screen: where every action returns to.
 static void show_idle()
 {
   view = V_IDLE;
   last_activity = millis();
   char buf[40];
-  if (g_pending_id && g_pending_heart) {
+  if (g_offline) {                       // stays up until Wi-Fi is back, whatever else was on screen
+    set_status("No WiFi", "Hold PWR 5s", ICON_NONE, "to set up WiFi");
+  } else if (g_pending_id && g_pending_heart) {
     set_status(g_pending_from, "sent a heart", ICON_HEART);
   } else if (g_pending_id) {
     snprintf(buf, sizeof(buf), "from %s", g_pending_from);
@@ -126,7 +139,7 @@ static void show_saver()
   view = V_SAVER;
   char version[12];
   snprintf(version, sizeof(version), "v%d", FW_VERSION);
-  set_status("Tobia Talk", "Device", ICON_HEART, g_set.name.c_str(), version);
+  set_status("Tobia Talk", "Device", ICON_HEART, g_set.name.c_str(), version, g_pending_id != 0);
 }
 
 static void format_age(char *out, size_t n, uint32_t s)
@@ -215,7 +228,8 @@ static int fetch_history()
 {
   WiFiClientSecure tls;
   HTTPClient http;
-  if (!begin_request(http, tls, "/messages?last=5")) return 0;
+  // The server leaves out this board's own messages, so history only shows what others sent.
+  if (!begin_request(http, tls, "/messages?last=5&exclude=" + name_param())) return 0;
   if (http.GET() != 200) { http.end(); return 0; }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, http.getString());
@@ -246,9 +260,10 @@ static void show_history()
   view_deadline = millis() + 10000;
 }
 
-// Hold BOOT to record. Returns mono samples, or -1 if BOOT was released within
-// TAP_MS (a tap). Keeps recording until MIN_RECORD_MS even if BOOT is released
-// early, and stops at MAX_RECORD_MS.
+// Hold BOOT to record. Returns mono samples, -1 if BOOT was released within
+// TAP_MS (a tap), or -2 if PWR was pressed together with BOOT (within TAP_MS).
+// Keeps recording until MIN_RECORD_MS even if BOOT is released early, and stops
+// at MAX_RECORD_MS.
 static int record_message()
 {
   static int16_t stereo[512];            // 256 frames of L/R
@@ -258,6 +273,7 @@ static int record_message()
   while (n + 256 <= MONO_CAP_SAMPLES) {
     uint32_t elapsed = millis() - t0;
     bool down = button_down(BOOT_BUTTON_PIN);
+    if (elapsed < TAP_MS && button_down(PWR_BUTTON_PIN)) return -2;   // both buttons together
     if (!down && elapsed < TAP_MS) return -1;
     if (!announced && elapsed >= TAP_MS) {   // it's a hold: now show it
       announced = true;
@@ -405,6 +421,59 @@ static void on_pwr_short()
   }
 }
 
+// ---- battery ----
+// The battery is read through a 1:2 divider on GPIO4 (ADC1 channel 3), as in Waveshare's ADC example.
+#define BATT_ADC_PIN 4
+
+static int battery_mv()
+{
+  uint32_t sum = 0;
+  for (int i = 0; i < 16; i++) sum += analogReadMilliVolts(BATT_ADC_PIN);
+  return (int)(sum / 16) * 2;
+}
+
+// Typical single-cell LiPo discharge curve (open-circuit volts -> percent).
+static int battery_percent(int mv)
+{
+  static const int table[][2] = {{4200, 100}, {4100, 90}, {4000, 80}, {3900, 65}, {3800, 45},
+                                 {3750, 30},  {3700, 20}, {3650, 12}, {3600, 6},  {3300, 0}};
+  if (mv >= table[0][0]) return 100;
+  for (size_t i = 1; i < sizeof(table) / sizeof(table[0]); i++) {
+    if (mv >= table[i][0]) {
+      int hi_mv = table[i - 1][0], lo_mv = table[i][0], hi_p = table[i - 1][1], lo_p = table[i][1];
+      return lo_p + (hi_p - lo_p) * (mv - lo_mv) / (hi_mv - lo_mv);
+    }
+  }
+  return 0;
+}
+
+// Refreshes the indicator. The e-paper redraws the whole screen on any change, so the
+// label only changes when the percent moves by 5 or more, or the battery appears/disappears.
+static void battery_update()
+{
+  int mv = battery_mv();
+  Serial.printf("[battery] %d mV\n", mv);
+  // With USB plugged in the pin reads ~4.17 V (the charger) even with NO battery, so a reading in that
+  // range proves nothing. Only a reading clearly below it can come from a battery; once seen, show it.
+  if (mv >= 3000 && mv <= 4050) g_batt_seen = true;
+  bool present = g_batt_seen && mv >= 3000 && mv <= 4400;
+  int pct = present ? (battery_percent(mv) + 2) / 5 * 5 : -1;
+  if (pct == g_batt_pct) return;
+  g_batt_pct = pct;
+  if (!example_lvgl_lock(-1)) return;
+  if (pct < 0) {
+    lv_obj_add_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
+  } else {
+    const char *sym = pct > 87 ? LV_SYMBOL_BATTERY_FULL : pct > 62 ? LV_SYMBOL_BATTERY_3
+                    : pct > 37 ? LV_SYMBOL_BATTERY_2 : pct > 12 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
+    char text[24];
+    snprintf(text, sizeof(text), "%s %d%%", sym, pct);
+    lv_label_set_text(batt_label, text);
+    lv_obj_clear_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
+  }
+  example_lvgl_unlock();
+}
+
 static void app_task(void *arg)
 {
   if (!settings_load(g_set)) {           // never configured: go straight to setup
@@ -413,14 +482,32 @@ static void app_task(void *arg)
   set_status("Connecting", "WiFi...");
   wifi_start();
   for (int i = 0; i < 40 && !online(); i++) vTaskDelay(pdMS_TO_TICKS(500));
-  uint32_t last_poll = 0, last_blink = 0, pwr_t0 = 0, offline_since = millis();
-  bool led = false, pwr_was_down = false, shown_offline = false;
+  uint32_t last_poll = 0, last_blink = 0, pwr_t0 = 0, offline_since = millis(), last_batt = 0;
+  bool led = false, pwr_was_down = false;
+  g_offline = !online();                 // the 20 s connect attempt above already failed: say so right away
   show_idle();
 
   for (;;) {
     if (button_down(BOOT_BUTTON_PIN)) {
       int n = record_message();
-      if (n < 0) {
+      if (n == -2) {                     // PWR + BOOT together: jump to the screensaver
+        show_saver();
+        uint32_t both_t0 = millis();
+        bool powered_off = false;
+        while (button_down(BOOT_BUTTON_PIN) || button_down(PWR_BUTTON_PIN)) {
+          // Keep holding both for 10 s to power off a battery-powered board (the screensaver stays on the e-paper).
+          if (!powered_off && button_down(BOOT_BUTTON_PIN) && button_down(PWR_BUTTON_PIN) &&
+              millis() - both_t0 >= POWEROFF_HOLD_MS) {
+            powered_off = true;
+            vTaskDelay(pdMS_TO_TICKS(2500));   // let the e-paper finish drawing first
+            board_div.VBAT_POWER_OFF();        // on USB power the board keeps running; see below
+          }
+          vTaskDelay(pdMS_TO_TICKS(20));
+        }
+        if (powered_off) board_div.VBAT_POWER_ON();   // still alive = USB powered: re-latch so unplugging USB keeps it running
+        pwr_was_down = false;            // the PWR release must not count as a tap
+        vTaskDelay(pdMS_TO_TICKS(150));  // let the contacts settle
+      } else if (n < 0) {
         on_boot_tap();
       } else {
         set_status("Sending", "...");
@@ -448,7 +535,8 @@ static void app_task(void *arg)
     }
 
     if (view == V_HISTORY && millis() > view_deadline) show_idle();
-    if (view == V_IDLE && !g_pending_id && !shown_offline && millis() - last_activity > SAVER_MS) show_saver();
+    // A waiting message no longer blocks the screensaver: it shows a little envelope in the corner.
+    if (view == V_IDLE && !g_offline && millis() - last_activity > SAVER_MS) show_saver();
 
     // Automatic update: only while idle on the screensaver, nothing waiting, and online.
     if (g_fw_offer_version > FW_VERSION && view == V_SAVER && !g_pending_id && online() &&
@@ -469,10 +557,15 @@ static void app_task(void *arg)
 
     if (online()) {
       offline_since = millis();
-      if (shown_offline) { shown_offline = false; show_idle(); }
-    } else if (!shown_offline && millis() - offline_since > 30000) {
-      shown_offline = true;
-      set_status("No WiFi", "PWR 5s: setup");
+      if (g_offline) { g_offline = false; show_idle(); }
+    } else if (!g_offline && millis() - offline_since > OFFLINE_MS) {
+      g_offline = true;
+      if (view != V_HISTORY) show_idle();
+    }
+
+    if (last_batt == 0 || millis() - last_batt > 30000) {
+      battery_update();
+      last_batt = millis();
     }
 
     if (millis() - last_poll > POLL_EVERY_MS) {
@@ -486,6 +579,7 @@ static void app_task(void *arg)
 void user_app_init(void)
 {
   mono = (int16_t *)heap_caps_malloc(MONO_CAP_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
+  board_div.VBAT_POWER_ON();             // latch: on battery the board would shut off when PWR is released
   board_div.POWEER_EPD_ON();
   board_div.POWEER_Audio_ON();
   i2c_master_Init();
@@ -557,6 +651,21 @@ void user_ui_init(void)
   lv_obj_set_pos(envelope_canvas, 60, 12);
   lv_obj_add_flag(envelope_canvas, LV_OBJ_FLAG_HIDDEN);
 
+  // Same envelope, 28x20, for the bottom-right of the screensaver (2 px border, flap to the middle).
+  mini_env_canvas = lv_canvas_create(src_ui.screen);
+  lv_canvas_set_buffer(mini_env_canvas, mini_env_buf, 28, 20, LV_IMG_CF_TRUE_COLOR);
+  lv_canvas_fill_bg(mini_env_canvas, lv_color_white(), LV_OPA_COVER);
+  for (int py = 0; py < 20; py++) {
+    for (int px = 0; px < 28; px++) {
+      bool border = px < 2 || px > 25 || py < 2 || py > 17;
+      float flap = px <= 13 ? 1.0f + 9.0f * px / 13.0f : 1.0f + 9.0f * (27 - px) / 14.0f;
+      bool flap_px = px >= 1 && px <= 26 && fabsf(py - flap) <= 1.0f;
+      if (border || flap_px) lv_canvas_set_px(mini_env_canvas, px, py, lv_color_black());
+    }
+  }
+  lv_obj_set_pos(mini_env_canvas, 166, 172);
+  lv_obj_add_flag(mini_env_canvas, LV_OBJ_FLAG_HIDDEN);
+
   foot_label = lv_label_create(src_ui.screen);
   lv_label_set_text(foot_label, "");
   lv_obj_set_pos(foot_label, 14, 168);
@@ -565,6 +674,14 @@ void user_ui_init(void)
   lv_obj_set_style_text_color(foot_label, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_text_align(foot_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_add_flag(foot_label, LV_OBJ_FLAG_HIDDEN);
+
+  batt_label = lv_label_create(src_ui.screen);
+  lv_label_set_text(batt_label, "");
+  lv_obj_set_pos(batt_label, 6, 4);
+  lv_obj_set_size(batt_label, 62, 18);
+  lv_obj_set_style_text_font(batt_label, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_text_color(batt_label, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_add_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
 
   corner_label = lv_label_create(src_ui.screen);
   lv_label_set_text(corner_label, "");
