@@ -28,13 +28,33 @@ only makes outgoing HTTPS requests to the Worker, which stores messages for a wh
 
 ## How it behaves
 
-- **Hold BOOT**: records (LED on). Always at least 5 s, at most 15 s. Release to send.
-- **Tap BOOT** (under 0.4 s): sends a heart.
-- **New message** from someone else: screen shows it, LED blinks. **Tap PWR** to play it.
-- **Tap PWR** with nothing waiting: browse the last 5 messages. PWR = next, BOOT = replay. Leaves after 10 s.
-- **Hold PWR 5 s**: opens the Wi-Fi/name setup portal.
-- **Screens**: the send screen (name, "Hold to talk") is home. After 15 s idle a heart screensaver ("Tobia Talk Device") appears and stays on the e-paper even when unplugged. Any tap wakes it (the tap does nothing else). A waiting voice message shows an envelope icon.
-- Your own messages are never announced to you. New messages appear within ~20 s (poll interval).
+Two buttons, **BOOT** and **PWR**. What they do depends on the screen:
+
+| Where | Press | Does |
+|---|---|---|
+| Send screen | Hold **BOOT** | Records (LED on), at least 5 s, at most 15 s; release to send |
+| Send screen | Tap **BOOT** (under 0.4 s) | Sends a heart |
+| Send screen | Tap **PWR** | Opens history (last 5 messages from *other* boards, newest first) |
+| New message waiting | Tap **PWR** | Plays it (a heart is just acknowledged) |
+| History | Tap **PWR** | Next older message (wraps around) |
+| History | Tap **BOOT** | Previous (newer) message (wraps around) |
+| History | Hold **PWR** 3 s | Replays the shown voice message (the screen says so) |
+| Anywhere | **PWR + BOOT** together | History -> send screen; send screen -> screensaver |
+| Anywhere | Hold **PWR** 5 s | Wi-Fi / name setup portal (not in history view) |
+| Anywhere | Hold **PWR + BOOT** 10 s | Powers off a battery-powered board with "OFF" on the screensaver. On USB it just keeps running |
+| Screensaver | Tap either button | Wakes to the send screen (the tap does nothing else) |
+
+Screens and indicators:
+- **Send screen** (name, "Hold to talk") is home. After 15 s idle a heart screensaver ("Tobia Talk Device",
+  name, firmware version top-right) appears. E-paper keeps the image with no power, so it is also what an
+  unplugged board shows.
+- **New message:** the send screen shows an envelope (or a heart) with the sender, the LED blinks for 5 s, and on
+  the screensaver a small envelope appears bottom-right until it is read. Your own messages are never announced to you.
+  New messages appear within ~20 s (poll interval).
+- **No Wi-Fi:** about 20 s after Wi-Fi is lost (or right after a failed boot connect) the home screen says
+  "No WiFi / Hold PWR 5s / to set up WiFi" and stays that way until Wi-Fi returns.
+- **Battery** (top-left, only when a battery has been detected): percentage with a battery symbol; a charging bolt
+  while USB is plugged in. See "Battery" below.
 
 ## Setting everything up from scratch
 
@@ -163,7 +183,7 @@ Do not host firmware binaries anywhere public: `secrets.h` (the family password)
 | `POST /admin/firmware?version=<n>&only=A,B` | Publish a signed image (admin key). `only` omitted/`all` = everyone. Versions must increase (`force=1` overrides). |
 | `POST /admin/rollout?only=A,B` or `only=all` | Change who is offered the current version (admin key). |
 | `GET /admin/status` | Current firmware offer (admin key). |
-| `GET /messages?last=N` | Last N (max 20), oldest first. |
+| `GET /messages?last=N&exclude=Name` | Last N (max 20), oldest first. `exclude` leaves out one sender (a board's own name). |
 | `GET /audio?id=<id>` | Raw PCM for a voice message (404 once expired). |
 
 A message looks like `{id, from, type, time, seconds?, text?, age}` (`age` = seconds since sent).
@@ -175,12 +195,29 @@ One board polling every 20 s uses about 4,300 requests/day, so roughly 20 boards
 Change `POLL_EVERY_MS` in `firmware/TobiaTalk/user_app.cpp` to trade latency for quota.
 Check current limits on Cloudflare's pricing pages before relying on these numbers.
 
+## Battery
+
+The board has a LiPo charger and a power path (ETA6098). Findings from measuring a 3000 mAh battery:
+- The voltage pin (GPIO4, 1:2 divider, ADC1 ch3) reads ~4.17 V on USB with **no** battery, so the indicator stays
+  hidden until a reading clearly below that (< 4.05 V) or a plug/unplug step proves a battery is attached.
+- **Charging inflates the reading** (~65 mV) and the board's own draw deflates it. There is no charge-status or USB-detect
+  pin on a GPIO (the charger's STAT pin only drives the red charge LED), so the firmware watches for the sharp
+  60-70 mV step when USB is plugged/unplugged (everyday noise is < 20 mV), tracks "plugged in / on battery", and
+  subtracts the learned offset while plugged in. Loads (speaker, recording, uploads) are ignored for a few seconds.
+- Assumes "plugged in" at boot; a board started from battery reads slightly low until the first plug/unplug.
+- The firmware sets the **power-latch pin (GPIO17)** at startup. Without it a battery-only board shuts off when PWR is released.
+- Battery debugging: set `BATT_DEBUG` to 1 in `user_app.cpp` to log the voltage every 2 s and keep it in flash
+  (send `d` over serial to dump, `c` to clear). Note: **opening the serial port resets the board.**
+- The user LED (GPIO3) is **green**, single colour. The charger's red LED is wired to the charger only.
+
 ## Maintenance notes
 - **Lost or leaked family password:** run `npx wrangler secret put FAMILY_KEY` with a new value,
   put the same value in `secrets.h`, and re-flash every board.
 - **Redeploy server after edits:** `cd family-relay && npx wrangler deploy`.
 - **Wi-Fi changed at someone's house:** hold PWR for 5 s on their board and redo the portal.
-- **Clear old test messages:** `npx wrangler kv key delete --binding MSGS --remote log`.
+- **Clear old test messages:** `npx wrangler kv key delete --binding MSGS --remote log`. Leave the `seq` key alone:
+  it keeps message numbers increasing, and boards remember the last number they saw.
+- **A board that is "off" on battery** starts again when USB is plugged in or PWR is pressed.
 - **If a toolchain upgrade breaks the build:** the last known-good versions were arduino-esp32 3.3.12,
   LVGL 8.3.11, ArduinoJson 7.4.3, wrangler 4.x, Node 22.
 

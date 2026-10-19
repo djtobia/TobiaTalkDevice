@@ -10,6 +10,7 @@
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <Preferences.h>
 #include "freertos/FreeRTOS.h"
 #include "user_app.h"
 #include "driver/gpio.h"
@@ -35,8 +36,13 @@ void example_lvgl_unlock(void);
 #define MAX_RECORD_MS    15000
 #define TAP_MS           400    // BOOT released sooner than this = tap (heart)
 #define SETUP_HOLD_MS    5000   // hold PWR this long to open the Wi-Fi/name setup portal
+#define REPLAY_HOLD_MS   3000   // in history view: hold PWR this long to replay the shown message
 #define SAVER_MS         15000  // idle this long -> screensaver
 #define OFFLINE_MS       20000  // Wi-Fi down this long -> "No WiFi" screen
+#define BLINK_MS         5000   // how long the LED blinks for a new message
+#ifndef BATT_DEBUG
+#define BATT_DEBUG 0            // 1 = log battery voltage every 2 s (and keep it in flash; send 'd' to dump, 'c' to clear)
+#endif
 #define POWEROFF_HOLD_MS 10000  // hold PWR+BOOT this long -> power off (battery only); deliberate on purpose
 #define POLL_EVERY_MS   20000
 #define MONO_CAP_SAMPLES (16000 * 20)   // matches the server's 20 s limit
@@ -51,6 +57,7 @@ static lv_obj_t *envelope_canvas = NULL;
 static lv_color_t envelope_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(80, 56)];
 static lv_obj_t *mini_env_canvas = NULL;   // tiny envelope, bottom-right of the screensaver: unread message
 static lv_color_t mini_env_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(28, 20)];
+static lv_obj_t *off_label = NULL;      // "OFF" tag, bottom-left: drawn just before a battery board powers down
 static lv_obj_t *foot_label = NULL;     // small line at the bottom of the screen
 static lv_obj_t *corner_label = NULL;   // small tag in the top-right corner (firmware version)
 enum Icon { ICON_NONE, ICON_HEART, ICON_ENVELOPE };
@@ -68,10 +75,12 @@ static bool g_tls_insecure = false;
 static lv_obj_t *batt_label = NULL;     // top-left: battery symbol + percent, only when a battery is connected
 static int g_batt_pct = -2;             // last shown: -2 = not drawn yet, -1 = no battery
 static bool g_batt_seen = false;        // a battery-only voltage has been measured since boot
+static void battery_note_activity();    // defined with the other battery code below
 
 static int g_pending_id = 0;            // newest unseen message from someone else
 static bool g_pending_heart = false;
 static char g_pending_from[24] = "";
+static uint32_t g_blink_until = 0;      // LED blinks until this time after a new message arrives
 
 struct Msg { int id; char from[24]; bool heart; int seconds; uint32_t age; };
 enum View { V_IDLE, V_HISTORY, V_SAVER };
@@ -84,6 +93,7 @@ static void set_status(const char *top, const char *bottom, Icon icon = ICON_NON
                        const char *corner = NULL, bool mini_env = false)
 {
   if (example_lvgl_lock(-1)) {
+    lv_obj_add_flag(off_label, LV_OBJ_FLAG_HIDDEN);   // any normal screen clears the OFF tag
     if (mini_env) lv_obj_clear_flag(mini_env_canvas, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(mini_env_canvas, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(src_ui.screen_label_1, top);
@@ -221,6 +231,7 @@ static void poll_messages()
     }
   }
   g_first_poll = false;
+  if (changed) g_blink_until = millis() + BLINK_MS;   // blink the LED for a few seconds, then stop
   if (changed && view != V_HISTORY) show_idle();   // also wakes the screensaver
 }
 
@@ -256,7 +267,7 @@ static void show_history()
   char age[16], bottom[32];
   format_age(age, sizeof(age), m.age + (millis() - hist_fetched) / 1000);
   snprintf(bottom, sizeof(bottom), "%s %d/%d", age, hist_i + 1, hist_n);
-  set_status(m.from, bottom, m.heart ? ICON_HEART : ICON_NONE);
+  set_status(m.from, bottom, m.heart ? ICON_HEART : ICON_NONE, m.heart ? NULL : "Hold PWR for 3 seconds\nto play");
   view_deadline = millis() + 10000;
 }
 
@@ -286,6 +297,7 @@ static int record_message()
     for (int i = 0; i < 256; i++) mono[n++] = (stereo[2 * i] + stereo[2 * i + 1]) / 2;
   }
   set_led(false);
+  battery_note_activity();               // recording, then the upload, load the battery
   return (int)n;
 }
 
@@ -301,6 +313,7 @@ static bool send_message(size_t samples, bool heart)
   http.addHeader("content-type", "application/octet-stream");
   int code = heart ? http.POST("") : http.POST((uint8_t *)mono, samples * 2);
   http.end();
+  battery_note_activity();
   return code == 200;
 }
 
@@ -347,6 +360,7 @@ static bool play_message(int id, const char *from)
   }
   set_status("Playing", from);
   play_samples(n);
+  battery_note_activity();               // the speaker load sagged the battery; don't read that as an unplug
   return true;
 }
 
@@ -376,12 +390,6 @@ static void on_boot_tap()
     show_idle();
     return;
   }
-  if (view == V_HISTORY) {               // in history, BOOT tap replays the shown message
-    Msg &m = hist[hist_i];
-    if (!m.heart) play_message(m.id, m.from);
-    show_history();
-    return;
-  }
   set_status("Sending", "heart", ICON_HEART);
   bool ok = send_message(0, true);
   set_status(ok ? "Sent" : "Failed", ok ? "heart" : online() ? "Try again" : "No WiFi", ok ? ICON_HEART : ICON_NONE);
@@ -393,6 +401,11 @@ static void on_pwr_short()
 {
   if (view == V_SAVER) {                 // wake the screensaver back to the send screen
     show_idle();
+    return;
+  }
+  if (view == V_HISTORY) {               // in history PWR only pages down (next older message), wrapping at the end
+    hist_i = (hist_i + 1) % hist_n;
+    show_history();
     return;
   }
   if (g_pending_id) {                    // new message waiting: play it / acknowledge the heart
@@ -447,24 +460,48 @@ static int battery_percent(int mv)
   return 0;
 }
 
-// Refreshes the indicator. The e-paper redraws the whole screen on any change, so the
-// label only changes when the percent moves by 5 or more, or the battery appears/disappears.
-static void battery_update()
+// While USB is plugged in the charger pushes current into the battery and the pin reads ~65 mV
+// ABOVE the battery's own voltage; on battery the board's own draw pulls it a bit down. Neither is the
+// true level, but the switch between them is a sharp step (60-72 mV measured, against <= 18 mV of
+// everyday noise). So we track "plugged in / on battery" from those steps and, while plugged in,
+// subtract the offset learned from the last step and show a charging bolt.
+#define BATT_STEP_MV 45                 // a jump this big, holding for the next reading, is a plug/unplug
+static bool g_usb = true;               // assume plugged in at boot; the first step corrects it
+static int g_offset_mv = 65;
+static int bat_win[6];                  // last few 2-second readings
+static int bat_win_n = 0;
+static bool bat_cand = false;           // a possible step waiting for confirmation
+static int bat_cand_mv = 0;
+static uint32_t g_bat_quiet_until = 0;
+static bool g_batt_usb_shown = true;
+
+// Audio playback, recording and uploads load the battery and move the voltage; ignore it and re-baseline after.
+static void battery_note_activity()
 {
-  int mv = battery_mv();
-  Serial.printf("[battery] %d mV\n", mv);
-  // With USB plugged in the pin reads ~4.17 V (the charger) even with NO battery, so a reading in that
-  // range proves nothing. Only a reading clearly below it can come from a battery; once seen, show it.
-  if (mv >= 3000 && mv <= 4050) g_batt_seen = true;
-  bool present = g_batt_seen && mv >= 3000 && mv <= 4400;
-  int pct = present ? (battery_percent(mv) + 2) / 5 * 5 : -1;
-  if (pct == g_batt_pct) return;
+  g_bat_quiet_until = millis() + 4000;
+  bat_win_n = 0;
+  bat_cand = false;
+}
+
+// Draws the indicator. The e-paper redraws the whole screen on any change, so the label only changes
+// when the percent moves by 4+ points, or the plugged/unplugged state flips.
+static void battery_show(int mv_avg)
+{
+  bool present = g_batt_seen && mv_avg >= 3000 && mv_avg <= 4400;
+  int raw = (g_usb && mv_avg >= 4180) ? 100 : battery_percent(g_usb ? mv_avg - g_offset_mv : mv_avg);
+  int pct;
+  if (!present) pct = -1;
+  else if (g_batt_pct >= 0 && abs(raw - g_batt_pct) < 4 && g_usb == g_batt_usb_shown) pct = g_batt_pct;
+  else pct = (raw + 2) / 5 * 5;
+  if (pct == g_batt_pct && g_usb == g_batt_usb_shown) return;
   g_batt_pct = pct;
+  g_batt_usb_shown = g_usb;
   if (!example_lvgl_lock(-1)) return;
   if (pct < 0) {
     lv_obj_add_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
   } else {
-    const char *sym = pct > 87 ? LV_SYMBOL_BATTERY_FULL : pct > 62 ? LV_SYMBOL_BATTERY_3
+    const char *sym = g_usb ? LV_SYMBOL_CHARGE
+                    : pct > 87 ? LV_SYMBOL_BATTERY_FULL : pct > 62 ? LV_SYMBOL_BATTERY_3
                     : pct > 37 ? LV_SYMBOL_BATTERY_2 : pct > 12 ? LV_SYMBOL_BATTERY_1 : LV_SYMBOL_BATTERY_EMPTY;
     char text[24];
     snprintf(text, sizeof(text), "%s %d%%", sym, pct);
@@ -472,6 +509,91 @@ static void battery_update()
     lv_obj_clear_flag(batt_label, LV_OBJ_FLAG_HIDDEN);
   }
   example_lvgl_unlock();
+}
+
+// Called every ~2 s.
+static void battery_sample()
+{
+  int mv = battery_mv();
+  if (millis() < g_bat_quiet_until) return;
+  if (bat_win_n >= 3) {
+    int sum = 0;
+    for (int i = 0; i < bat_win_n; i++) sum += bat_win[i];
+    int avg = sum / bat_win_n;
+    if (!bat_cand && abs(mv - avg) >= BATT_STEP_MV) { bat_cand = true; bat_cand_mv = mv; return; }
+    if (bat_cand) {
+      bat_cand = false;
+      if (abs(mv - bat_cand_mv) < 20) {                 // it held: a real plug / unplug, not a load spike
+        int step = bat_cand_mv - avg;
+        g_usb = step > 0;
+        g_offset_mv = (g_offset_mv + constrain(abs(step), 30, 120)) / 2;
+        g_batt_seen = true;                             // a battery-less board loses power on unplug, so a step proves one
+        bat_win[0] = bat_cand_mv;
+        bat_win[1] = mv;
+        bat_win_n = 2;
+        Serial.printf("[battery] step %+d mV -> %s, offset %d mV\n", step, g_usb ? "plugged in" : "on battery", g_offset_mv);
+        battery_show((bat_cand_mv + mv) / 2);
+        return;
+      }
+      // it did not hold: a transient, so use this reading normally
+    }
+  }
+  if (bat_win_n < 6) {
+    bat_win[bat_win_n++] = mv;
+  } else {
+    for (int i = 0; i < 5; i++) bat_win[i] = bat_win[i + 1];
+    bat_win[5] = mv;
+  }
+  if (mv >= 3000 && mv <= 4050) g_batt_seen = true;    // below the ~4.17 V a battery-less board reads on USB
+  if (bat_win_n >= 2) {
+    int sum = 0;
+    for (int i = 0; i < bat_win_n; i++) sum += bat_win[i];
+    battery_show(sum / bat_win_n);
+  }
+}
+
+// What one BOOT press means in history view.
+enum { BG_TAP, BG_HOLD, BG_COMBO };
+static int boot_gesture()
+{
+  uint32_t t0 = millis();
+  for (;;) {
+    uint32_t elapsed = millis() - t0;
+    if (elapsed < TAP_MS && button_down(PWR_BUTTON_PIN)) return BG_COMBO;
+    if (!button_down(BOOT_BUTTON_PIN) && elapsed < TAP_MS) return BG_TAP;
+    if (elapsed >= TAP_MS) return BG_HOLD;
+    vTaskDelay(pdMS_TO_TICKS(10));
+  }
+}
+
+// PWR + BOOT together: history -> send screen, send screen -> screensaver, screensaver stays.
+// Holding both for 10 s powers off a battery-powered board with the screensaver (tagged OFF) left on the e-paper.
+static void handle_combo()
+{
+  if (view == V_HISTORY) show_idle();
+  else if (view == V_IDLE) show_saver();
+
+  uint32_t both_t0 = millis();
+  bool powered_off = false;
+  while (button_down(BOOT_BUTTON_PIN) || button_down(PWR_BUTTON_PIN)) {
+    if (!powered_off && button_down(BOOT_BUTTON_PIN) && button_down(PWR_BUTTON_PIN) &&
+        millis() - both_t0 >= POWEROFF_HOLD_MS) {
+      powered_off = true;
+      if (view != V_SAVER) show_saver();   // always power off showing the screensaver
+      if (example_lvgl_lock(-1)) {         // mark it OFF so a dark board does not look merely idle
+        lv_obj_clear_flag(off_label, LV_OBJ_FLAG_HIDDEN);
+        example_lvgl_unlock();
+      }
+      vTaskDelay(pdMS_TO_TICKS(3500));     // let the e-paper finish drawing first
+      board_div.VBAT_POWER_OFF();          // on USB power the board keeps running; see below
+    }
+    vTaskDelay(pdMS_TO_TICKS(20));
+  }
+  if (powered_off) {                       // still alive = USB powered: re-latch so unplugging USB keeps it running
+    board_div.VBAT_POWER_ON();
+    show_saver();                          // and redraw without the OFF tag
+  }
+  vTaskDelay(pdMS_TO_TICKS(150));          // let the contacts settle
 }
 
 static void app_task(void *arg)
@@ -482,31 +604,32 @@ static void app_task(void *arg)
   set_status("Connecting", "WiFi...");
   wifi_start();
   for (int i = 0; i < 40 && !online(); i++) vTaskDelay(pdMS_TO_TICKS(500));
-  uint32_t last_poll = 0, last_blink = 0, pwr_t0 = 0, offline_since = millis(), last_batt = 0;
-  bool led = false, pwr_was_down = false;
+  uint32_t last_poll = 0, pwr_t0 = 0, offline_since = millis(), last_batt = 0, last_dbg = 0;
+  bool pwr_was_down = false, pwr_consumed = false;
   g_offline = !online();                 // the 20 s connect attempt above already failed: say so right away
   show_idle();
 
   for (;;) {
     if (button_down(BOOT_BUTTON_PIN)) {
-      int n = record_message();
-      if (n == -2) {                     // PWR + BOOT together: jump to the screensaver
-        show_saver();
-        uint32_t both_t0 = millis();
-        bool powered_off = false;
-        while (button_down(BOOT_BUTTON_PIN) || button_down(PWR_BUTTON_PIN)) {
-          // Keep holding both for 10 s to power off a battery-powered board (the screensaver stays on the e-paper).
-          if (!powered_off && button_down(BOOT_BUTTON_PIN) && button_down(PWR_BUTTON_PIN) &&
-              millis() - both_t0 >= POWEROFF_HOLD_MS) {
-            powered_off = true;
-            vTaskDelay(pdMS_TO_TICKS(2500));   // let the e-paper finish drawing first
-            board_div.VBAT_POWER_OFF();        // on USB power the board keeps running; see below
-          }
-          vTaskDelay(pdMS_TO_TICKS(20));
+      int n = 0;
+      if (view == V_HISTORY) {           // in history BOOT pages up; it does not record (PWR hold replays)
+        int g = boot_gesture();
+        if (g == BG_COMBO) {
+          handle_combo();
+          pwr_was_down = false;
+        } else if (g == BG_TAP) {        // previous message (wraps from the first to the last)
+          hist_i = (hist_i + hist_n - 1) % hist_n;
+          show_history();
+        } else {                         // BOOT held in history: nothing to do, ignore until released
+          while (button_down(BOOT_BUTTON_PIN)) vTaskDelay(pdMS_TO_TICKS(20));
         }
-        if (powered_off) board_div.VBAT_POWER_ON();   // still alive = USB powered: re-latch so unplugging USB keeps it running
+        last_poll = millis();
+        continue;
+      }
+      n = record_message();
+      if (n == -2) {                     // PWR + BOOT together
+        handle_combo();
         pwr_was_down = false;            // the PWR release must not count as a tap
-        vTaskDelay(pdMS_TO_TICKS(150));  // let the contacts settle
       } else if (n < 0) {
         on_boot_tap();
       } else {
@@ -520,19 +643,65 @@ static void app_task(void *arg)
     }
 
     bool pwr_down = button_down(PWR_BUTTON_PIN);
-    if (pwr_down && !pwr_was_down) pwr_t0 = millis();
-    if (pwr_down && millis() - pwr_t0 >= SETUP_HOLD_MS) enter_setup();
-    if (!pwr_down && pwr_was_down && millis() - pwr_t0 > 30) on_pwr_short();
+    if (pwr_down && !pwr_was_down) { pwr_t0 = millis(); pwr_consumed = false; }
+    if (pwr_down && !pwr_consumed && view == V_HISTORY && millis() - pwr_t0 >= REPLAY_HOLD_MS) {
+      pwr_consumed = true;               // held in history: replay the shown message (and no page-down / setup on release)
+      Msg &m = hist[hist_i];
+      if (!m.heart) play_message(m.id, m.from);
+      show_history();
+      last_poll = millis();
+    }
+    if (pwr_down && !pwr_consumed && millis() - pwr_t0 >= SETUP_HOLD_MS) enter_setup();
+    if (!pwr_down && pwr_was_down && !pwr_consumed && millis() - pwr_t0 > 30) on_pwr_short();
     pwr_was_down = pwr_down;
 
-    if (g_pending_id && millis() - last_blink > 700) {   // blink LED while a message waits
-      led = !led;
-      set_led(led);
-      last_blink = millis();
-    } else if (!g_pending_id && led) {
-      led = false;
-      set_led(false);
+#if BATT_DEBUG
+    // TEMPORARY experiment: log the battery voltage every 2 s so plug/unplug jumps can be measured.
+    // Readings are also kept in memory (30 min) so an unplugged stretch can be read back: send 'd' over serial.
+    static uint32_t ring_t[900];
+    static uint16_t ring_mv[900];
+    static int ring_n = 0;
+    static bool ring_loaded = false;
+    static uint32_t last_save = 0;
+    if (!ring_loaded) {   // opening the serial port resets this board, so keep the readings in flash across restarts
+      ring_loaded = true;
+      Preferences rp;
+      rp.begin("battdbg", true);
+      ring_n = rp.getBytes("t", ring_t, sizeof(ring_t)) / 4;
+      int nm = rp.getBytes("mv", ring_mv, sizeof(ring_mv)) / 2;
+      if (nm < ring_n) ring_n = nm;
+      rp.end();
+      if (ring_n < 900) { ring_t[ring_n] = 0; ring_mv[ring_n] = 0; ring_n++; }   // t=0 mV=0 marks a boot
     }
+    if (millis() - last_dbg > 2000) {
+      int mv = battery_mv();
+      if (ring_n < 900) { ring_t[ring_n] = millis(); ring_mv[ring_n] = mv; ring_n++; }
+      Serial.printf("[batt-dbg] t=%lu mV=%d\n", (unsigned long)millis(), mv);
+      last_dbg = millis();
+    }
+    if (millis() - last_save > 20000 && ring_n > 0) {
+      Preferences rp;
+      rp.begin("battdbg", false);
+      rp.putBytes("t", ring_t, ring_n * 4);
+      rp.putBytes("mv", ring_mv, ring_n * 2);
+      rp.end();
+      last_save = millis();
+    }
+    if (Serial.available()) {
+      int ch = Serial.read();
+      if (ch == 'd') {         // dump everything recorded so far
+        for (int i = 0; i < ring_n; i++) Serial.printf("[ring] t=%lu mV=%u\n", (unsigned long)ring_t[i], ring_mv[i]);
+        Serial.println("[ring] end");
+      } else if (ch == 'c') {  // clear the recording to start a fresh run
+        ring_n = 0;
+        Preferences rp;
+        rp.begin("battdbg", false);
+        rp.clear();
+        rp.end();
+        Serial.println("[ring] cleared");
+      }
+    }
+#endif
 
     if (view == V_HISTORY && millis() > view_deadline) show_idle();
     // A waiting message no longer blocks the screensaver: it shows a little envelope in the corner.
@@ -555,6 +724,16 @@ static void app_task(void *arg)
     // A just-installed firmware that cannot reach the server within 3 minutes goes back to the old one.
     if (millis() > 180000 && ota_pending_verify()) ota_rollback();
 
+    // New-message LED: blinks for BLINK_MS after the message arrives, then goes dark (the envelope stays on screen).
+    static bool blinking = false;
+    if ((int32_t)(g_blink_until - millis()) > 0) {
+      blinking = true;
+      set_led((millis() / 300) % 2 == 0);
+    } else if (blinking) {
+      blinking = false;
+      set_led(false);
+    }
+
     if (online()) {
       offline_since = millis();
       if (g_offline) { g_offline = false; show_idle(); }
@@ -563,8 +742,8 @@ static void app_task(void *arg)
       if (view != V_HISTORY) show_idle();
     }
 
-    if (last_batt == 0 || millis() - last_batt > 30000) {
-      battery_update();
+    if (millis() - last_batt >= 2000) {
+      battery_sample();
       last_batt = millis();
     }
 
@@ -668,12 +847,20 @@ void user_ui_init(void)
 
   foot_label = lv_label_create(src_ui.screen);
   lv_label_set_text(foot_label, "");
-  lv_obj_set_pos(foot_label, 14, 168);
-  lv_obj_set_size(foot_label, 170, 20);
+  lv_obj_set_size(foot_label, 170, LV_SIZE_CONTENT);       // grows with its text (the history hint takes two lines)
+  lv_obj_align(foot_label, LV_ALIGN_BOTTOM_MID, 0, -8);    // anchored to the bottom so extra lines grow upward
   lv_obj_set_style_text_font(foot_label, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_text_color(foot_label, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_text_align(foot_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_add_flag(foot_label, LV_OBJ_FLAG_HIDDEN);
+
+  off_label = lv_label_create(src_ui.screen);
+  lv_label_set_text(off_label, "OFF");
+  lv_obj_set_pos(off_label, 8, 172);
+  lv_obj_set_size(off_label, 40, 20);
+  lv_obj_set_style_text_font(off_label, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_text_color(off_label, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_add_flag(off_label, LV_OBJ_FLAG_HIDDEN);
 
   batt_label = lv_label_create(src_ui.screen);
   lv_label_set_text(batt_label, "");
