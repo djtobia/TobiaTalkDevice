@@ -57,6 +57,8 @@ static lv_obj_t *envelope_canvas = NULL;
 static lv_color_t envelope_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(80, 56)];
 static lv_obj_t *mini_env_canvas = NULL;   // tiny envelope, bottom-right of the screensaver: unread message
 static lv_color_t mini_env_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(28, 20)];
+static lv_obj_t *arrow_canvas = NULL;   // right-pointing arrow next to "Hold to talk", toward the BOOT button
+static lv_color_t arrow_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(28, 20)];
 static lv_obj_t *off_label = NULL;      // "OFF" tag, bottom-left: drawn just before a battery board powers down
 static lv_obj_t *foot_label = NULL;     // small line at the bottom of the screen
 static lv_obj_t *corner_label = NULL;   // small tag in the top-right corner (firmware version)
@@ -90,9 +92,11 @@ static int hist_n = 0, hist_i = 0;
 static uint32_t hist_fetched = 0, view_deadline = 0;
 
 static void set_status(const char *top, const char *bottom, Icon icon = ICON_NONE, const char *foot = NULL,
-                       const char *corner = NULL, bool mini_env = false)
+                       const char *corner = NULL, bool mini_env = false, bool arrow = false)
 {
   if (example_lvgl_lock(-1)) {
+    if (arrow) lv_obj_clear_flag(arrow_canvas, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(arrow_canvas, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(off_label, LV_OBJ_FLAG_HIDDEN);   // any normal screen clears the OFF tag
     if (mini_env) lv_obj_clear_flag(mini_env_canvas, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(mini_env_canvas, LV_OBJ_FLAG_HIDDEN);
@@ -138,7 +142,7 @@ static void show_idle()
     snprintf(buf, sizeof(buf), "from %s", g_pending_from);
     set_status("New message", buf, ICON_ENVELOPE);
   } else {
-    set_status(g_set.name.c_str(), "Hold to talk", ICON_NONE, "Tap = heart");
+    set_status(g_set.name.c_str(), "Hold to talk", ICON_NONE, "Tap = heart", NULL, false, true);   // arrow -> BOOT button
   }
 }
 
@@ -271,8 +275,31 @@ static void show_history()
   view_deadline = millis() + 10000;
 }
 
+// The audio chip and speaker amplifier are only powered while recording or playing: switched off they
+// draw nothing, which is a large part of the idle battery drain. The codec forgets its settings when
+// unpowered, so it is set up from scratch each time (about a quarter of a second).
+static bool audio_on()
+{
+  board_div.POWEER_Audio_ON();
+  vTaskDelay(pdMS_TO_TICKS(30));         // let the rail settle before talking to the codec
+  if (audio_bsp_init() != 0) {
+    audio_bsp_deinit();
+    board_div.POWEER_Audio_OFF();
+    return false;
+  }
+  audio_play_init();
+  return true;
+}
+
+static void audio_off()
+{
+  audio_bsp_deinit();
+  board_div.POWEER_Audio_OFF();
+}
+
 // Hold BOOT to record. Returns mono samples, -1 if BOOT was released within
-// TAP_MS (a tap), or -2 if PWR was pressed together with BOOT (within TAP_MS).
+// TAP_MS (a tap), -2 if PWR was pressed together with BOOT (within TAP_MS), or
+// -3 if the audio hardware could not be started.
 // Keeps recording until MIN_RECORD_MS even if BOOT is released early, and stops
 // at MAX_RECORD_MS.
 static int record_message()
@@ -281,22 +308,26 @@ static int record_message()
   size_t n = 0;
   bool announced = false;
   uint32_t t0 = millis();
+  if (!audio_on()) return -3;
   while (n + 256 <= MONO_CAP_SAMPLES) {
     uint32_t elapsed = millis() - t0;
     bool down = button_down(BOOT_BUTTON_PIN);
-    if (elapsed < TAP_MS && button_down(PWR_BUTTON_PIN)) return -2;   // both buttons together
-    if (!down && elapsed < TAP_MS) return -1;
+    if (elapsed < TAP_MS && button_down(PWR_BUTTON_PIN)) { audio_off(); return -2; }   // both buttons together
+    if (!down && elapsed < TAP_MS) { audio_off(); return -1; }
     if (!announced && elapsed >= TAP_MS) {   // it's a hold: now show it
       announced = true;
       set_led(true);
       set_status("Recording", "Speak now");
     }
-    if (elapsed >= MAX_RECORD_MS) break;
-    if (!down && elapsed >= MIN_RECORD_MS) break;
+    // Limits are counted in captured samples (16 per ms), not clock time: the audio chip takes ~0.25 s to start,
+    // so a clock-based 5 s would capture just under the server's 5 s minimum and be refused (HTTP 400).
+    if (n >= (size_t)MAX_RECORD_MS * 16) break;
+    if (!down && n >= (size_t)MIN_RECORD_MS * 16 + 512) break;
     audio_playback_read(stereo, sizeof(stereo));
     for (int i = 0; i < 256; i++) mono[n++] = (stereo[2 * i] + stereo[2 * i + 1]) / 2;
   }
   set_led(false);
+  audio_off();
   battery_note_activity();               // recording, then the upload, load the battery
   return (int)n;
 }
@@ -358,8 +389,14 @@ static bool play_message(int id, const char *from)
     vTaskDelay(pdMS_TO_TICKS(2000));
     return false;
   }
+  if (!audio_on()) {
+    set_status("Audio error", "Try again");
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    return false;
+  }
   set_status("Playing", from);
   play_samples(n);
+  audio_off();
   battery_note_activity();               // the speaker load sagged the battery; don't read that as an unplug
   return true;
 }
@@ -676,6 +713,10 @@ static void app_task(void *arg)
       if (n == -2) {                     // PWR + BOOT together
         handle_combo();
         pwr_was_down = false;            // the PWR release must not count as a tap
+      } else if (n == -3) {              // audio hardware would not start: say so, do not send anything
+        set_status("Audio error", "Try again");
+        vTaskDelay(pdMS_TO_TICKS(2500));
+        show_idle();
       } else if (n < 0) {
         on_boot_tap();
       } else {
@@ -806,8 +847,7 @@ void user_app_init(void)
   mono = (int16_t *)heap_caps_malloc(MONO_CAP_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
   board_div.VBAT_POWER_ON();             // latch: on battery the board would shut off when PWR is released
   board_div.POWEER_EPD_ON();
-  board_div.POWEER_Audio_ON();
-  i2c_master_Init();
+  board_div.POWEER_Audio_OFF();          // audio rail stays off until a message is recorded or played
 
   custom_lcd_spi_t cfg = {};
   cfg.cs = EPD_CS_PIN;
@@ -835,9 +875,6 @@ void user_app_init(void)
   in.pull_up_en = GPIO_PULLUP_ENABLE;
   in.pin_bit_mask = (1ULL << BOOT_BUTTON_PIN) | (1ULL << PWR_BUTTON_PIN);
   gpio_config(&in);
-
-  audio_bsp_init();
-  audio_play_init();
 }
 
 void user_ui_init(void)
@@ -899,6 +936,20 @@ void user_ui_init(void)
   lv_obj_set_style_text_color(foot_label, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_text_align(foot_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_add_flag(foot_label, LV_OBJ_FLAG_HIDDEN);
+
+  // Right-pointing arrow, 28x20: a shaft and a triangular head, drawn at the right edge on the "Hold to talk" line.
+  arrow_canvas = lv_canvas_create(src_ui.screen);
+  lv_canvas_set_buffer(arrow_canvas, arrow_buf, 28, 20, LV_IMG_CF_TRUE_COLOR);
+  lv_canvas_fill_bg(arrow_canvas, lv_color_white(), LV_OPA_COVER);
+  for (int py = 0; py < 20; py++) {
+    for (int px = 0; px < 28; px++) {
+      bool shaft = px <= 18 && py >= 8 && py <= 11;
+      bool head = px >= 14 && px <= 26 && fabsf(py - 9.5f) <= (26 - px) * 0.8f + 0.5f;
+      if (shaft || head) lv_canvas_set_px(arrow_canvas, px, py, lv_color_black());
+    }
+  }
+  lv_obj_set_pos(arrow_canvas, 170, 113);     // same line as "Hold to talk" (y 112..134), right edge toward BOOT
+  lv_obj_add_flag(arrow_canvas, LV_OBJ_FLAG_HIDDEN);
 
   off_label = lv_label_create(src_ui.screen);
   lv_label_set_text(off_label, "OFF");

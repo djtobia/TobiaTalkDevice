@@ -43,6 +43,17 @@ Status: server deployed and tested live (`npm test` for the local tests). Firmwa
 - Battery: unknown plug state at boot when started from battery (reads slightly low until the first plug/unplug).
 
 ## Ideas (not started)
+- **Networks with a sign-in page (hotel/airport/café/dorm Wi-Fi).** Today a board joins such a network but never
+  reaches the server, and the screen shows nothing wrong (the "No WiFi" screen only appears when Wi-Fi itself fails).
+  If boards ever need to work there:
+  - Add an internet check: Wi-Fi up but the server unreachable -> show "Connected, no internet / network may need sign-in".
+  - Add a no-password `/ping` endpoint on the Worker and only send the family key after `/ping` answers correctly. This also
+    closes a small hole: after 3 failed certificate checks the board falls back to unverified TLS, and on a sign-in
+    network that could send the family key to the network's own login server.
+  - Show the board's MAC address (setup page and screen) so it can be pre-registered where networks allow that.
+  - Workaround today: a phone's personal hotspot (no sign-in page).
+  - Out of scope unless needed: auto-completing sign-in pages (every portal differs) and WPA2-Enterprise networks
+    (eduroam-style username + password; the setup page only takes a plain password).
 - **Text display + speech-to-text.** Show the `text` field on screen (smaller font, paging for
   long text); transcribe voice on the server in the background (OpenAI or Cloudflare Workers AI;
   check current pricing). Falls back to audio-only if transcription fails. The server already has a `text` type.

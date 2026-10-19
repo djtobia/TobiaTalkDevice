@@ -12,19 +12,33 @@ esp_codec_dev_handle_t record = NULL;
 
 
 
-void audio_bsp_init(void)
+// Returns 0 on success. Called each time the audio rail is switched on (the codec forgets its
+// settings when unpowered), so a failure is reported instead of aborting the whole firmware.
+int audio_bsp_init(void)
 {
   set_codec_board_type("S3_ePaper_1_54");
-	codec_init_cfg_t codec_cfg = 
+	codec_init_cfg_t codec_cfg =
   {
     .in_mode = CODEC_I2S_MODE_STD,
     .out_mode = CODEC_I2S_MODE_STD,
     .in_use_tdm = false,
     .reuse_dev = false,
   };
-  ESP_ERROR_CHECK(init_codec(&codec_cfg));
+  int ret = init_codec(&codec_cfg);
+  if (ret != 0) return ret;
   playback = get_playback_handle();
   record = get_record_handle();
+  return (playback && record) ? 0 : -1;
+}
+
+// Closes the codec and releases its I2C/I2S drivers, ready for the audio rail to be switched off.
+void audio_bsp_deinit(void)
+{
+  if (playback) esp_codec_dev_close(playback);
+  if (record) esp_codec_dev_close(record);
+  deinit_codec();
+  playback = NULL;
+  record = NULL;
 }
 
 void i2s_echo(void *arg)

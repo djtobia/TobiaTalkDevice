@@ -215,6 +215,12 @@ The board has a LiPo charger and a power path (ETA6098). Findings from measuring
 - Battery debugging: set `BATT_DEBUG` to 1 in `user_app.cpp` to log the voltage every 2 s and keep it in flash
   (send `d` over serial to dump, `c` to clear). Note: **opening the serial port resets the board.**
 - The user LED (GPIO3) is **green**, single colour. The charger's red LED is wired to the charger only.
+- **Audio power saving:** the audio chip (ES8311) and speaker amplifier sit on their own power rail (GPIO42, active low).
+  The firmware keeps it OFF and powers it up only while recording or playing, then tears the codec down and switches it
+  off again. The codec forgets its settings when unpowered, so it is initialised from scratch each time (~0.25 s).
+  Measured drain before this change on battery with always-on Wi-Fi: about 1.7 %/hour (~2.5 days, ~50 mA average).
+  Because of that start-up delay, recording limits are counted in captured samples, not clock time; a clock-based
+  5 s minimum captured just under 5 s and the server refused it (HTTP 400).
 
 ## Maintenance notes
 - **Lost or leaked family password:** run `npx wrangler secret put FAMILY_KEY` with a new value,

@@ -6,7 +6,8 @@
 extern "C" {
 #endif
 
-void audio_bsp_init(void);
+int audio_bsp_init(void);
+void audio_bsp_deinit(void);
 void i2s_echo(void *arg);
 void audio_playback_set_vol(uint8_t vol);
 
