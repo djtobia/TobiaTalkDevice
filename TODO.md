@@ -8,7 +8,8 @@ compiles (see firmware/README.md for build settings) but has NOT run on a board 
 - Per-person names, stored on the device, set in the setup portal (untested on hardware).
 - Wi-Fi setup portal: first boot, or hold PWR 5 s (untested on hardware).
 - History of the last 5 messages (PWR tap), replay with BOOT tap (untested on hardware).
-- Heart: tap BOOT (untested on hardware).
+- Heart: tap BOOT. Tested on two boards: heart and envelope icons look good.
+- Screensaver (15 s idle, heart + "Tobia Talk Device") and envelope icon for new messages; tap wakes to the send screen.
 - Firmware built with the two-slot "Minimal SPIFFS" partition scheme so OTA updates are possible later.
 
 ## Next
@@ -17,7 +18,9 @@ compiles (see firmware/README.md for build settings) but has NOT run on a board 
   The two test messages already on the server ("Hi from Claude" text, a heart) should show in
   the history view as a first check; the text one will look wrong until text display exists.
   Delete them afterwards: `npx wrangler kv key delete --binding MSGS --remote log`.
-- Confirm V1 vs V2 board (PSRAM setting differs) and touch vs non-touch.
+- First two boards are V2 (8 MB flash/8 MB PSRAM), NOT touch. 5 more TOUCH boards are coming: check their chip
+  (esptool chip-id) and Waveshare's pin differences before flashing; Waveshare says examples are not
+  interchangeable between hardware versions. The same firmware ignores touch, so it should run, but verify.
 - Verify TLS certificate (currently `setInsecure()`).
 - Queue of unplayed messages instead of only the newest.
 - Several saved Wi-Fi networks per device.

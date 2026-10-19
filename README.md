@@ -31,6 +31,7 @@ only makes outgoing HTTPS requests to the Worker, which stores messages for a wh
 - **New message** from someone else: screen shows it, LED blinks. **Tap PWR** to play it.
 - **Tap PWR** with nothing waiting: browse the last 5 messages. PWR = next, BOOT = replay. Leaves after 10 s.
 - **Hold PWR 5 s**: opens the Wi-Fi/name setup portal.
+- **Screens**: the send screen (name, "Hold to talk") is home. After 15 s idle a heart screensaver ("Tobia Talk Device") appears and stays on the e-paper even when unplugged. Any tap wakes it (the tap does nothing else). A waiting voice message shows an envelope icon.
 - Your own messages are never announced to you. New messages appear within ~20 s (poll interval).
 
 ## Setting everything up from scratch

@@ -47,4 +47,10 @@ const long = await (await call("/send?from=Claude&type=text", { method: "POST", 
 assert.equal(long.text.length, 200);
 assert.equal((await (await call("/messages?since=3")).json()).messages[0].text, "Hi from Claude");
 
+// clearing the log must not make ids restart (boards remember the last id they saw)
+const before = (await (await call("/messages")).json()).messages.at(-1).id;
+store.delete("log");
+const afterClear = await (await call("/send?from=Mom&type=heart", { method: "POST" })).json();
+assert.equal(afterClear.id, before + 1);
+
 console.log("ok");

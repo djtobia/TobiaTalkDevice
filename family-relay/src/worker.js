@@ -52,7 +52,9 @@ export default {
         if (pcm.byteLength > MAX_SECONDS * BYTES_PER_SEC) return json({ error: `maximum ${MAX_SECONDS}s` }, 413);
       }
       const log = JSON.parse((await env.MSGS.get("log")) || "[]");
-      const id = (log.at(-1)?.id || 0) + 1;
+      // `seq` outlives the log, so clearing history never reuses ids (boards remember the last id they saw).
+      const id = Math.max(Number(await env.MSGS.get("seq")) || 0, log.at(-1)?.id || 0) + 1;
+      await env.MSGS.put("seq", String(id));
       const msg = { id, from, type, time: new Date().toISOString() };
       if (type === "text") msg.text = text;
       if (voice) {

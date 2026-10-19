@@ -32,7 +32,8 @@ void example_lvgl_unlock(void);
 #define MAX_RECORD_MS    15000
 #define TAP_MS           400    // BOOT released sooner than this = tap (heart)
 #define SETUP_HOLD_MS    5000   // hold PWR this long to open the Wi-Fi/name setup portal
-#define POLL_EVERY_MS    20000
+#define SAVER_MS         15000  // idle this long -> screensaver
+#define POLL_EVERY_MS   20000
 #define MONO_CAP_SAMPLES (16000 * 20)   // matches the server's 20 s limit
 
 epaper_driver_display *driver = NULL;
@@ -41,6 +42,11 @@ board_power_bsp_t board_div(EPD_PWR_PIN, Audio_PWR_PIN, VBAT_PWR_PIN);
 static lv_ui src_ui;
 static lv_obj_t *heart_canvas = NULL;
 static lv_color_t heart_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(80, 70)];
+static lv_obj_t *envelope_canvas = NULL;
+static lv_color_t envelope_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(80, 56)];
+static lv_obj_t *foot_label = NULL;     // small line at the bottom of the screen
+enum Icon { ICON_NONE, ICON_HEART, ICON_ENVELOPE };
+static uint32_t last_activity = 0;      // when the send screen was last shown (for the screensaver)
 static int16_t *mono = NULL;            // 16 kHz mono PCM, lives in PSRAM
 static Settings g_set;                  // Wi-Fi + this person's name (from flash)
 static int g_last_id = 0;
@@ -51,19 +57,27 @@ static bool g_pending_heart = false;
 static char g_pending_from[24] = "";
 
 struct Msg { int id; char from[24]; bool heart; int seconds; uint32_t age; };
-enum View { V_IDLE, V_HISTORY };
+enum View { V_IDLE, V_HISTORY, V_SAVER };
 static View view = V_IDLE;
 static Msg hist[5];                     // newest first
 static int hist_n = 0, hist_i = 0;
 static uint32_t hist_fetched = 0, view_deadline = 0;
 
-static void set_status(const char *top, const char *bottom, bool heart = false)
+static void set_status(const char *top, const char *bottom, Icon icon = ICON_NONE, const char *foot = NULL)
 {
   if (example_lvgl_lock(-1)) {
     lv_label_set_text(src_ui.screen_label_1, top);
     lv_label_set_text(src_ui.screen_label_2, bottom);
-    if (heart) lv_obj_clear_flag(heart_canvas, LV_OBJ_FLAG_HIDDEN);
+    if (icon == ICON_HEART) lv_obj_clear_flag(heart_canvas, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(heart_canvas, LV_OBJ_FLAG_HIDDEN);
+    if (icon == ICON_ENVELOPE) lv_obj_clear_flag(envelope_canvas, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(envelope_canvas, LV_OBJ_FLAG_HIDDEN);
+    if (foot) {
+      lv_label_set_text(foot_label, foot);
+      lv_obj_clear_flag(foot_label, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(foot_label, LV_OBJ_FLAG_HIDDEN);
+    }
     example_lvgl_unlock();
   }
 }
@@ -72,18 +86,28 @@ static void set_led(bool on) { gpio_set_level((gpio_num_t)LED_PIN, on ? 0 : 1); 
 static bool button_down(int pin) { return gpio_get_level((gpio_num_t)pin) == 0; }
 static bool online() { return WiFi.status() == WL_CONNECTED; }
 
+// The "send a message" screen: where every action returns to.
 static void show_idle()
 {
   view = V_IDLE;
+  last_activity = millis();
   char buf[40];
   if (g_pending_id && g_pending_heart) {
-    set_status(g_pending_from, "sent a heart", true);
+    set_status(g_pending_from, "sent a heart", ICON_HEART);
   } else if (g_pending_id) {
     snprintf(buf, sizeof(buf), "from %s", g_pending_from);
-    set_status("New message", buf);
+    set_status("New message", buf, ICON_ENVELOPE);
   } else {
-    set_status(g_set.name.c_str(), "Hold to talk");
+    set_status(g_set.name.c_str(), "Hold to talk", ICON_NONE, "Tap = heart");
   }
+}
+
+// Screensaver: e-paper keeps this image with no power, so it is also what an
+// unplugged board shows. Any tap goes back to the send screen.
+static void show_saver()
+{
+  view = V_SAVER;
+  set_status("Tobia Talk", "Device", ICON_HEART, g_set.name.c_str());
 }
 
 static void format_age(char *out, size_t n, uint32_t s)
@@ -135,7 +159,7 @@ static void poll_messages()
     }
   }
   g_first_poll = false;
-  if (changed && view == V_IDLE) show_idle();
+  if (changed && view != V_HISTORY) show_idle();   // also wakes the screensaver
 }
 
 static int fetch_history()
@@ -169,7 +193,7 @@ static void show_history()
   char age[16], bottom[32];
   format_age(age, sizeof(age), m.age + (millis() - hist_fetched) / 1000);
   snprintf(bottom, sizeof(bottom), "%s %d/%d", age, hist_i + 1, hist_n);
-  set_status(m.from, bottom, m.heart);
+  set_status(m.from, bottom, m.heart ? ICON_HEART : ICON_NONE);
   view_deadline = millis() + 10000;
 }
 
@@ -269,21 +293,29 @@ static void enter_setup()
 
 static void on_boot_tap()
 {
+  if (view == V_SAVER) {                 // a tap on the screensaver only wakes it (no accidental heart)
+    show_idle();
+    return;
+  }
   if (view == V_HISTORY) {               // in history, BOOT tap replays the shown message
     Msg &m = hist[hist_i];
     if (!m.heart) play_message(m.id, m.from);
     show_history();
     return;
   }
-  set_status("Sending", "heart", true);
+  set_status("Sending", "heart", ICON_HEART);
   bool ok = send_message(0, true);
-  set_status(ok ? "Sent" : "Failed", ok ? "heart" : online() ? "Try again" : "No WiFi", ok);
+  set_status(ok ? "Sent" : "Failed", ok ? "heart" : online() ? "Try again" : "No WiFi", ok ? ICON_HEART : ICON_NONE);
   vTaskDelay(pdMS_TO_TICKS(2500));
   show_idle();
 }
 
 static void on_pwr_short()
 {
+  if (view == V_SAVER) {                 // wake the screensaver back to the send screen
+    show_idle();
+    return;
+  }
   if (g_pending_id) {                    // new message waiting: play it / acknowledge the heart
     int id = g_pending_id;
     bool heart = g_pending_heart;
@@ -353,6 +385,7 @@ static void app_task(void *arg)
     }
 
     if (view == V_HISTORY && millis() > view_deadline) show_idle();
+    if (view == V_IDLE && !g_pending_id && !shown_offline && millis() - last_activity > SAVER_MS) show_saver();
 
     if (online()) {
       offline_since = millis();
@@ -427,6 +460,31 @@ void user_ui_init(void)
   }
   lv_obj_set_pos(heart_canvas, 60, 2);
   lv_obj_add_flag(heart_canvas, LV_OBJ_FLAG_HIDDEN);
+
+  // Envelope (new-message icon): 3 px border, flap lines meeting in the middle.
+  envelope_canvas = lv_canvas_create(src_ui.screen);
+  lv_canvas_set_buffer(envelope_canvas, envelope_buf, 80, 56, LV_IMG_CF_TRUE_COLOR);
+  lv_canvas_fill_bg(envelope_canvas, lv_color_white(), LV_OPA_COVER);
+  for (int py = 0; py < 56; py++) {
+    for (int px = 0; px < 80; px++) {
+      bool inside = px >= 4 && px <= 75 && py >= 4 && py <= 51;
+      bool border = inside && (px < 7 || px > 72 || py < 7 || py > 48);
+      float flap = px <= 40 ? 4.0f + 26.0f * (px - 4) / 36.0f : 4.0f + 26.0f * (75 - px) / 35.0f;
+      bool flap_px = inside && fabsf(py - flap) <= 1.5f;
+      if (border || flap_px) lv_canvas_set_px(envelope_canvas, px, py, lv_color_black());
+    }
+  }
+  lv_obj_set_pos(envelope_canvas, 60, 12);
+  lv_obj_add_flag(envelope_canvas, LV_OBJ_FLAG_HIDDEN);
+
+  foot_label = lv_label_create(src_ui.screen);
+  lv_label_set_text(foot_label, "");
+  lv_obj_set_pos(foot_label, 14, 168);
+  lv_obj_set_size(foot_label, 170, 20);
+  lv_obj_set_style_text_font(foot_label, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_text_color(foot_label, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_text_align(foot_label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_add_flag(foot_label, LV_OBJ_FLAG_HIDDEN);
 
   xTaskCreatePinnedToCore(app_task, "app_task", 16 * 1024, NULL, 3, NULL, 0);
 }
