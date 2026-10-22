@@ -43,6 +43,15 @@ void example_lvgl_unlock(void);
 #ifndef BATT_DEBUG
 #define BATT_DEBUG 0            // 1 = log battery voltage every 2 s (and keep it in flash; send 'd' to dump, 'c' to clear)
 #endif
+#ifndef BATT_DEBUG_MS
+#define BATT_DEBUG_MS 30000     // with BATT_DEBUG: log interval (900 entries kept; 30 s = ~7.5 h)
+#endif
+#ifndef AUDIO_POWER_SAVE
+// 0 = audio chip stays powered (default). 1 = audio rail only on while recording/playing. Measured on a
+// battery board: 1 drained ~40-50 % FASTER (about 3 %/h vs 2 %/h), most likely a leak into the unpowered codec/amp
+// through signal pins still driven by the processor. Left in for a retry; see TODO.md.
+#define AUDIO_POWER_SAVE 0
+#endif
 #define POWEROFF_HOLD_MS 10000  // hold PWR+BOOT this long -> power off (battery only); deliberate on purpose
 #define POLL_EVERY_MS   20000
 #define MONO_CAP_SAMPLES (16000 * 20)   // matches the server's 20 s limit
@@ -280,6 +289,9 @@ static void show_history()
 // unpowered, so it is set up from scratch each time (about a quarter of a second).
 static bool audio_on()
 {
+#if !AUDIO_POWER_SAVE
+  return true;                           // audio was started once at boot and stays on
+#endif
   board_div.POWEER_Audio_ON();
   vTaskDelay(pdMS_TO_TICKS(30));         // let the rail settle before talking to the codec
   if (audio_bsp_init() != 0) {
@@ -293,6 +305,9 @@ static bool audio_on()
 
 static void audio_off()
 {
+#if !AUDIO_POWER_SAVE
+  return;
+#endif
   audio_bsp_deinit();
   board_div.POWEER_Audio_OFF();
 }
@@ -760,10 +775,10 @@ static void app_task(void *arg)
       rp.end();
       if (ring_n < 900) { ring_t[ring_n] = 0; ring_mv[ring_n] = 0; ring_n++; }   // t=0 mV=0 marks a boot
     }
-    if (millis() - last_dbg > 2000) {
+    if (millis() - last_dbg > BATT_DEBUG_MS) {
       int mv = battery_mv();
       if (ring_n < 900) { ring_t[ring_n] = millis(); ring_mv[ring_n] = mv; ring_n++; }
-      Serial.printf("[batt-dbg] t=%lu mV=%d\n", (unsigned long)millis(), mv);
+      Serial.printf("[batt-dbg] t=%lu mV=%d audio_power_save=%d\n", (unsigned long)millis(), mv, AUDIO_POWER_SAVE);
       last_dbg = millis();
     }
     if (millis() - last_save > 20000 && ring_n > 0) {
@@ -847,7 +862,14 @@ void user_app_init(void)
   mono = (int16_t *)heap_caps_malloc(MONO_CAP_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
   board_div.VBAT_POWER_ON();             // latch: on battery the board would shut off when PWR is released
   board_div.POWEER_EPD_ON();
+#if AUDIO_POWER_SAVE
   board_div.POWEER_Audio_OFF();          // audio rail stays off until a message is recorded or played
+#else
+  board_div.POWEER_Audio_ON();           // A/B test build: audio on permanently, as in the original firmware
+  vTaskDelay(pdMS_TO_TICKS(50));
+  audio_bsp_init();
+  audio_play_init();
+#endif
 
   custom_lcd_spi_t cfg = {};
   cfg.cs = EPD_CS_PIN;

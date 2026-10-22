@@ -215,12 +215,18 @@ The board has a LiPo charger and a power path (ETA6098). Findings from measuring
 - Battery debugging: set `BATT_DEBUG` to 1 in `user_app.cpp` to log the voltage every 2 s and keep it in flash
   (send `d` over serial to dump, `c` to clear). Note: **opening the serial port resets the board.**
 - The user LED (GPIO3) is **green**, single colour. The charger's red LED is wired to the charger only.
-- **Audio power saving:** the audio chip (ES8311) and speaker amplifier sit on their own power rail (GPIO42, active low).
-  The firmware keeps it OFF and powers it up only while recording or playing, then tears the codec down and switches it
-  off again. The codec forgets its settings when unpowered, so it is initialised from scratch each time (~0.25 s).
-  Measured drain before this change on battery with always-on Wi-Fi: about 1.7 %/hour (~2.5 days, ~50 mA average).
-  Because of that start-up delay, recording limits are counted in captured samples, not clock time; a clock-based
-  5 s minimum captured just under 5 s and the server refused it (HTTP 400).
+- **Audio power saving (tried, OFF by default):** the audio chip (ES8311) and speaker amplifier sit on their own power
+  rail (GPIO42, active low). `AUDIO_POWER_SAVE 1` in `user_app.cpp` powers it only while recording/playing and re-initialises
+  the codec each time (~0.25 s). **It made battery life worse, not better:** on a 3000 mAh-labelled battery with always-on
+  Wi-Fi, always-on audio drained about 1.7-2.2 %/hour, power-saving about 2.8-3.3 %/hour (estimated from voltage; the
+  battery's true capacity is probably less than labelled). Likely a leak into the unpowered codec/amp through pins still
+  driven by the processor (PA_CTRL GPIO46, I2S/I2C lines). The default is therefore `AUDIO_POWER_SAVE 0` (audio stays on).
+  The switch and teardown code are kept for a retry. Recording limits are counted in captured samples, not clock time,
+  because the 0.25 s start-up made a clock-based 5 s minimum fall just under the server's 5 s minimum (HTTP 400).
+- **Measuring drain:** set `BATT_DEBUG` (and optionally `AUDIO_POWER_SAVE`) via `-D...` lines in `firmware/TobiaTalk/build_opt.h`.
+  The Arduino build tool does NOT notice a changed `build_opt.h` on its own: use `arduino-cli compile --clean` (or edit a
+  .cpp) so the flag actually applies, and check the `audio_power_save=` field in the serial log. Log every 30 s, compare
+  runs that start from a full charge, and compare in the same voltage band; the log ring holds 900 readings (~7.5 h).
 
 ## Maintenance notes
 - **Lost or leaked family password:** run `npx wrangler secret put FAMILY_KEY` with a new value,

@@ -30,6 +30,12 @@ Status: server deployed and tested live (`npm test` for the local tests). Firmwa
 - Flash every board over USB once with the final firmware at v1 (the version tag shows in the screensaver corner).
 
 ## Next
+- **Battery drain / audio power saving: resolved for now.** Voltage-log A/B runs (see README "Battery") showed switching the
+  audio rail off when idle made drain ~40-50% WORSE, so the default is now `AUDIO_POWER_SAVE 0` (audio always powered).
+  Battery life on always-on Wi-Fi is roughly 1.7-2.2 %/hour (about 2 days from full). A USB power meter is on order: use it to
+  measure real current (idle, Wi-Fi checking) and, if wanted, retry power saving after putting the audio chip's signal
+  pins (GPIO 14/15/16/38/45 I2S, 46 PA_CTRL, 47/48 I2C) in a harmless state before cutting its power. Other drain levers:
+  poll interval (20 s), Wi-Fi light sleep between checks.
 - **When the battery-equipped boards arrive:** every board will have a battery, so drop the "A battery is installed" checkbox
   from the setup page and make "battery present" the built-in default (e.g. a `BATTERY_INSTALLED 1` constant in
   `user_app.cpp`; keep the plug/unplug tracking). Consequence: a board with NO battery would then show a bogus ~100%
