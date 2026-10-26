@@ -1,15 +1,15 @@
 # TobiaTalkDevice
 
-A family "walkie-talkie" gift: small e-paper boxes that send voice messages and
-hearts to each other over the internet. Hold a button and talk; every other box
+A family "walkie-talkie" gift: small e-paper boxes that send voice messages, hearts and (on touch versions)
+little drawings to each other over the internet. Hold a button and talk; every other box
 shows "New message from Mom" and plays it when you press a button.
 
 Built on the **Waveshare ESP32-S3-ePaper-1.54** (200x200 black/white e-paper,
-built-in microphone, speaker, two buttons, Wi-Fi) and a tiny **Cloudflare Worker**
-that relays messages. No app, no phone needed for the family.
+built-in microphone, speaker, two buttons, Wi-Fi; the "Touch" version adds a touchscreen) and a tiny
+**Cloudflare Worker** that relays messages. No app, no phone needed for the family.
 
 ```
- board (hold BOOT, talk) --HTTPS POST--> Cloudflare Worker + KV <--HTTPS poll (every 20 s)-- other boards
+ board (hold BOOT, talk) --HTTPS POST--> Cloudflare Worker + KV <--HTTPS poll (every 60 s, 10 s while active)-- other boards
 ```
 
 Boards cannot talk to each other directly (home routers block that), so every board
@@ -20,7 +20,7 @@ only makes outgoing HTTPS requests to the Worker, which stores messages for a wh
 | Path | What |
 |---|---|
 | `family-relay/` | The server: one Cloudflare Worker (`src/worker.js`), tests, deploy config |
-| `firmware/TobiaTalk/` | The board firmware (Arduino sketch) |
+| `firmware/TobiaTalk/` | The board firmware (Arduino sketch); `touch.*` is the touchscreen driver |
 | `firmware/README.md` | Firmware build/usage details |
 | `tools/release.mjs` | Builds, signs and publishes a firmware update (see "Remote firmware updates") |
 | `signing/` | **Git-ignored, local only:** `ota_private.pem` (signing key) and `admin_key.txt` (admin password). Back these up! |
@@ -34,11 +34,14 @@ Two buttons, **BOOT** and **PWR**. What they do depends on the screen:
 |---|---|---|
 | Send screen | Hold **BOOT** | Records (LED on), at least 5 s, at most 15 s; release to send |
 | Send screen | Tap **BOOT** (under 0.4 s) | Sends a heart |
+| Send screen (touch boards) | **Touch the screen** | Starts a drawing (see below) |
 | Send screen | Tap **PWR** | Opens history (last 5 messages from *other* boards, newest first) |
-| New message waiting | Tap **PWR** | Plays it (a heart is just acknowledged) |
+| New message waiting | Tap **PWR** | Plays it / shows the drawing (a heart is just acknowledged) |
 | History | Tap **PWR** | Next older message (wraps around) |
 | History | Tap **BOOT** | Previous (newer) message (wraps around) |
-| History | Hold **PWR** 3 s | Replays the shown voice message (the screen says so) |
+| History | Hold **PWR** 3 s | Replays the shown voice message, or shows the drawing (the screen says which) |
+| Drawing (touch boards) | Finger / stylus | Draws. Tap **BOOT** sends it, tap **PWR** clears, **PWR + BOOT** leaves without sending |
+| Viewing a drawing | Any button | Back (it also closes by itself after 60 s) |
 | Anywhere | **PWR + BOOT** together | History -> send screen; send screen -> screensaver |
 | Anywhere | Hold **PWR** 5 s | Wi-Fi / name setup portal (not in history view) |
 | Anywhere | Hold **PWR + BOOT** 10 s | Powers off a battery-powered board with "OFF" on the screensaver. On USB it just keeps running |
@@ -50,11 +53,17 @@ Screens and indicators:
   unplugged board shows.
 - **New message:** the send screen shows an envelope (or a heart) with the sender, the LED blinks for 5 s, and on
   the screensaver a small envelope appears bottom-right until it is read. Your own messages are never announced to you.
-  New messages appear within ~20 s (poll interval).
+  A message appears within about a minute on a quiet board, and within ~10 s during a conversation (a board checks every 10 s
+  for 2 minutes after it sends, receives or plays a message, otherwise once a minute).
 - **No Wi-Fi:** about 20 s after Wi-Fi is lost (or right after a failed boot connect) the home screen says
   "No WiFi / Hold PWR 5s / to set up WiFi" and stays that way until Wi-Fi returns.
-- **Battery** (top-left, only when a battery has been detected): percentage with a battery symbol; a charging bolt
-  while USB is plugged in. See "Battery" below.
+- **Battery** (top-left): percentage with a battery symbol; a charging bolt while USB is plugged in. See "Battery" below.
+- **Drawings:** a drawing is a 200x200 black-and-white picture (5000 bytes). Touch boards can draw and send them; every
+  board, touch or not, can receive and view them (they show up as "New drawing from ..." and in history). Touch coordinates
+  are read from the FT6336 chip (I2C 0x38, reset on GPIO7) in `touch.cpp`; non-touch boards simply don't find that chip.
+  The e-paper redraws the whole screen in ~0.4 s, so strokes appear in short delayed bursts, and a fingertip is crude on
+  a 1.5" screen: a passive capacitive stylus with a ~4-6 mm tip works better. If a drawing comes out mirrored or rotated,
+  change `TOUCH_SWAP_XY` / `TOUCH_FLIP_X` / `TOUCH_FLIP_Y` in `user_app.cpp`.
 
 ## Setting everything up from scratch
 
@@ -178,6 +187,7 @@ Do not host firmware binaries anywhere public: `secrets.h` (the family password)
 | `POST /send?from=Name` body = raw PCM | Voice message. 16 kHz, 16-bit little-endian, mono. 5-20 s (else 400/413). |
 | `POST /send?from=Name&type=heart` | Heart, no body. |
 | `POST /send?from=Name&type=text` body = UTF-8 text | Text (max 200 chars). **Firmware does not display this yet.** |
+| `POST /send?from=Name&type=drawing` body = 5000 raw bytes | Drawing: 200x200, 1 bit per pixel, row-major, MSB first, 1 = black. Any other size is refused (400). |
 | `GET /messages?since=<id>&v=<fwversion>&me=<Name>` | Messages newer than id (what boards poll). If a newer firmware is on offer for that board the reply also has `fw: {version, size}`. |
 | `GET /firmware?version=<n>` | The signed firmware image. |
 | `POST /admin/firmware?version=<n>&only=A,B` | Publish a signed image (admin key). `only` omitted/`all` = everyone. Versions must increase (`force=1` overrides). |
@@ -185,24 +195,28 @@ Do not host firmware binaries anywhere public: `secrets.h` (the family password)
 | `GET /admin/status` | Current firmware offer (admin key). |
 | `GET /messages?last=N&exclude=Name` | Last N (max 20), oldest first. `exclude` leaves out one sender (a board's own name). |
 | `GET /audio?id=<id>` | Raw PCM for a voice message (404 once expired). |
+| `GET /image?id=<id>` | The 5000-byte bitmap of a drawing (404 once expired, after 7 days). |
 
 A message looks like `{id, from, type, time, seconds?, text?, age}` (`age` = seconds since sent).
 The server keeps the last 50 messages; audio expires after 7 days.
 
 ## Cost and limits
 Free tier at the time of writing: ~100,000 Worker requests/day and ~100,000 KV reads/day.
-One board polling every 20 s uses about 4,300 requests/day, so roughly 20 boards fit.
-Change `POLL_EVERY_MS` in `firmware/TobiaTalk/user_app.cpp` to trade latency for quota.
+A quiet board checks once a minute (about 1,440 requests/day, so 50+ boards fit); for 2 minutes after a message is
+sent, received or played it checks every 10 s. Change `POLL_IDLE_MS`, `POLL_ACTIVE_MS` and `ACTIVE_WINDOW_MS` in
+`firmware/TobiaTalk/user_app.cpp` to trade latency for battery and quota.
 Check current limits on Cloudflare's pricing pages before relying on these numbers.
 
 ## Battery
 
 The board has a LiPo charger and a power path (ETA6098). Findings from measuring a 3000 mAh battery:
 - The voltage pin (GPIO4, 1:2 divider, ADC1 ch3) reads ~4.17 V on USB with **no** battery, which is the same as a
-  **full** battery on USB, so voltage alone cannot tell "no battery" from "full battery". The indicator therefore shows
-  only when the board knows it has a battery: the **"A battery is installed" checkbox on the setup page** (pre-ticked on
-  re-setup), or automatically once it has proven one (a reading < 4.05 V, a plug/unplug step, or still running after the
-  cable came out). That is remembered in flash (namespace `battery`, key `seen`).
+  **full** battery on USB, so voltage alone cannot tell "no battery" from "full battery". Every board now ships with a
+  battery, so the indicator is **on by default** (`BATTERY_INSTALLED 1` in `user_app.cpp`). A board with NO battery would
+  show a bogus ~100%: build it with `-DBATTERY_INSTALLED=0` in `build_opt.h` (and `--clean`, see below). Older boards that were
+  set up with the former "A battery is installed" checkbox, or that proved a battery (reading < 4.05 V, a plug/unplug step,
+  still running after the cable came out), keep a flag in flash (namespace `battery`, key `seen`), which also turns it on.
+  Battery sizes seen so far: 3000 mAh-labelled (~1 day from full on this firmware) and 400 mAh (expect ~6-8 h).
 - **Charging inflates the reading** (~65 mV) and the board's own draw deflates it. There is no charge-status or USB-detect
   pin on a GPIO (the charger's STAT pin only drives the red charge LED), so the firmware watches for the sharp
   60-70 mV step when USB is plugged/unplugged (everyday noise is < 20 mV), tracks "plugged in / on battery", and
@@ -215,14 +229,17 @@ The board has a LiPo charger and a power path (ETA6098). Findings from measuring
 - Battery debugging: set `BATT_DEBUG` to 1 in `user_app.cpp` to log the voltage every 2 s and keep it in flash
   (send `d` over serial to dump, `c` to clear). Note: **opening the serial port resets the board.**
 - The user LED (GPIO3) is **green**, single colour. The charger's red LED is wired to the charger only.
-- **Audio power saving (tried, OFF by default):** the audio chip (ES8311) and speaker amplifier sit on their own power
-  rail (GPIO42, active low). `AUDIO_POWER_SAVE 1` in `user_app.cpp` powers it only while recording/playing and re-initialises
-  the codec each time (~0.25 s). **It made battery life worse, not better:** on a 3000 mAh-labelled battery with always-on
-  Wi-Fi, always-on audio drained about 1.7-2.2 %/hour, power-saving about 2.8-3.3 %/hour (estimated from voltage; the
-  battery's true capacity is probably less than labelled). Likely a leak into the unpowered codec/amp through pins still
-  driven by the processor (PA_CTRL GPIO46, I2S/I2C lines). The default is therefore `AUDIO_POWER_SAVE 0` (audio stays on).
-  The switch and teardown code are kept for a retry. Recording limits are counted in captured samples, not clock time,
-  because the 0.25 s start-up made a clock-based 5 s minimum fall just under the server's 5 s minimum (HTTP 400).
+- **Audio power saving (tried, OFF by default, effect UNPROVEN):** the audio chip (ES8311) and speaker amplifier sit on
+  their own power rail (GPIO42, active low). `AUDIO_POWER_SAVE 1` in `user_app.cpp` powers it only while recording/playing
+  and re-initialises the codec each time (~0.25 s). Voltage-log comparisons suggested it drained MORE (about 2.8-3.3 %/h
+  against 1.7-2.2 %/h), but those rates were estimated at different points on the battery curve and a later full-range run
+  of the always-on firmware gave ~4 %/h, so the comparison is not reliable. Measure real current (USB power meter) before
+  drawing conclusions. A possible cause if it really is worse: a leak into the unpowered codec/amp through pins still
+  driven by the processor (PA_CTRL GPIO46, I2S/I2C lines). The default is `AUDIO_POWER_SAVE 0` (audio stays on) because it is
+  simpler and best tested. Recording limits are counted in captured samples, not clock time, because the 0.25 s start-up
+  made a clock-based 5 s minimum fall just under the server's 5 s minimum (HTTP 400).
+- **Measured battery life (audio on, Wi-Fi check every 20 s, nothing else; before adaptive polling was added):** 90% -> 5% in 21 h, about
+  4 %/hour, i.e. roughly one day from full. The labelled 3000 mAh is probably optimistic for this battery.
 - **Measuring drain:** set `BATT_DEBUG` (and optionally `AUDIO_POWER_SAVE`) via `-D...` lines in `firmware/TobiaTalk/build_opt.h`.
   The Arduino build tool does NOT notice a changed `build_opt.h` on its own: use `arduino-cli compile --clean` (or edit a
   .cpp) so the flag actually applies, and check the `audio_power_save=` field in the serial log. Log every 30 s, compare

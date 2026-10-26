@@ -65,6 +65,22 @@ const lastTwo = await (await call("/messages?last=2&exclude=Mom")).json();   // 
 assert.equal(lastTwo.messages.length, 2);
 assert.ok(lastTwo.messages.every((m) => m.from !== "Mom"));
 
+// ---- drawings: exactly 5000 bytes (200x200, 1 bit/pixel), stored like audio, fetched with /image ----
+const drawing = new Uint8Array(5000).fill(0xa5);
+assert.equal((await call("/send?from=Mom&type=drawing", { method: "POST", body: new Uint8Array(4999) })).status, 400);
+assert.equal((await call("/send?from=Mom&type=drawing", { method: "POST", body: new Uint8Array(5001) })).status, 400);
+assert.equal((await call("/send?from=Mom&type=drawing", { method: "POST" })).status, 400);
+const dr = await (await call("/send?from=Mom&type=drawing", { method: "POST", body: drawing })).json();
+assert.deepEqual([dr.type, dr.seconds, dr.text], ["drawing", undefined, undefined]);
+const img = await call(`/image?id=${dr.id}`);
+assert.equal(img.status, 200);
+assert.deepEqual(new Uint8Array(await img.arrayBuffer()), drawing);
+assert.equal((await call(`/audio?id=${dr.id}`)).status, 404);          // drawings have no audio
+assert.equal((await call("/image?id=99999")).status, 404);
+assert.equal((await worker.fetch(new Request(`https://x/image?id=${dr.id}`), env)).status, 401);   // needs the family key
+const inLog = (await (await call("/messages?last=3")).json()).messages.at(-1);
+assert.deepEqual([inLog.id, inLog.type], [dr.id, "drawing"]);
+
 // ---- firmware updates ----
 const admin = (path, init = {}, key = "adm") =>
   worker.fetch(new Request("https://x" + path, { ...init, headers: { "x-admin-key": key } }), env);

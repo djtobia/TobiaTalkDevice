@@ -89,6 +89,10 @@ void example_lvgl_unlock(void)
   assert(lvgl_mux && "bsp_display_start must be called first");
   xSemaphoreGive(lvgl_mux);
 }
+// How soon the display task re-checks for changes. The app lowers this while drawing so a new stroke starts
+// redrawing within ~15 ms instead of up to 100 ms; it is back to the default on every normal screen.
+volatile int g_lvgl_min_delay_ms = EXAMPLE_LVGL_TASK_MIN_DELAY_MS;
+
 static void example_lvgl_port_task(void *arg)
 {
   uint32_t task_delay_ms = EXAMPLE_LVGL_TASK_MAX_DELAY_MS;
@@ -103,9 +107,9 @@ static void example_lvgl_port_task(void *arg)
     if (task_delay_ms > EXAMPLE_LVGL_TASK_MAX_DELAY_MS)
     {
       task_delay_ms = EXAMPLE_LVGL_TASK_MAX_DELAY_MS;
-    } else if (task_delay_ms < EXAMPLE_LVGL_TASK_MIN_DELAY_MS)
+    } else if (task_delay_ms < (uint32_t)g_lvgl_min_delay_ms)
     {
-      task_delay_ms = EXAMPLE_LVGL_TASK_MIN_DELAY_MS;
+      task_delay_ms = g_lvgl_min_delay_ms;
     }
     vTaskDelay(pdMS_TO_TICKS(task_delay_ms));
   }

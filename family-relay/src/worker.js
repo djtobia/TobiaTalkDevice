@@ -8,6 +8,7 @@ const BYTES_PER_SEC = RATE * 2;
 const MIN_SECONDS = 5;
 const MAX_SECONDS = 20;
 const MAX_KEPT = 50;
+const DRAWING_BYTES = 200 * 200 / 8;   // a 200x200 drawing, 1 bit per pixel, row-major, MSB first, 1 = black
 const AUDIO_TTL = 7 * 24 * 3600; // audio expires after a week
 const MAX_FIRMWARE_BYTES = 2 * 1024 * 1024; // app slot is 1.9 MB + 512 B signature
 const MIN_FIRMWARE_BYTES = 100 * 1024;
@@ -117,12 +118,24 @@ export default {
       });
     }
 
+    if (req.method === "GET" && url.pathname === "/image") {
+      const bmp = await env.MSGS.get(`img:${Number(url.searchParams.get("id"))}`, "arrayBuffer");
+      if (!bmp) return json({ error: "gone" }, 404);
+      return new Response(bmp, {
+        headers: { "content-type": "application/octet-stream", "content-length": String(bmp.byteLength) },
+      });
+    }
+
     if (req.method === "POST" && url.pathname === "/send") {
       const from = (url.searchParams.get("from") || "Someone").replace(/[^\w .'-]/g, "").slice(0, 20) || "Someone";
-      const type = ["heart", "text"].includes(url.searchParams.get("type")) ? url.searchParams.get("type") : "voice";
+      const wanted = url.searchParams.get("type");
+      const type = ["heart", "text", "drawing"].includes(wanted) ? wanted : "voice";
       const heart = type === "heart";
       const voice = type === "voice";
       const pcm = await req.arrayBuffer();
+      if (type === "drawing" && pcm.byteLength !== DRAWING_BYTES) {
+        return json({ error: `drawing must be exactly ${DRAWING_BYTES} bytes (200x200, 1 bit per pixel)` }, 400);
+      }
       let text = "";
       if (type === "text") {
         text = new TextDecoder().decode(pcm).trim().slice(0, 200);
@@ -142,6 +155,7 @@ export default {
         msg.seconds = Math.round(pcm.byteLength / BYTES_PER_SEC);
         await env.MSGS.put(`audio:${id}`, pcm, { expirationTtl: AUDIO_TTL });
       }
+      if (type === "drawing") await env.MSGS.put(`img:${id}`, pcm, { expirationTtl: AUDIO_TTL });
       log.push(msg);
       await env.MSGS.put("log", JSON.stringify(log.slice(-MAX_KEPT)));
       return json(msg);

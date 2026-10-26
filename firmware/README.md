@@ -26,6 +26,7 @@ just the firmware build notes.
 | `settings.*` | Wi-Fi + name saved in flash |
 | `setup_portal.*` | "TobiaTalk" captive-portal setup page |
 | `ota.*` | Signed over-the-air update install, rollback |
+| `touch.*` | FT6336 touchscreen driver (touch boards only; finds no chip on non-touch boards) |
 | `src/`, `audio_bsp.*` | Waveshare's display / codec / power / button drivers |
 
 ## Notes

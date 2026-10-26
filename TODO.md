@@ -1,54 +1,65 @@
 # TobiaTalk TODO
 
-Status: server deployed and tested live (`npm test` for the local tests). Firmware runs on two boards
-(both V2, non-touch; one has a 3000 mAh battery). Both show v1; the server is offering no firmware.
+Status: server deployed and tested live (`npm test` for the local tests). Firmware runs on three boards: two
+non-touch V2 (one with a 3000 mAh battery, one with none) and one touch V2 with a 400 mAh battery. All show v1; the
+server is offering no firmware update.
 
 ## Done and tested on hardware
-- Voice messages, hearts, envelope/heart icons, LED blink (5 s) on a new message.
+- Voice messages, hearts, **drawings** (touch boards draw; every board receives and views them), envelope/heart icons,
+  LED blink (5 s) on a new message.
 - Screensaver (15 s) with version tag, unread envelope and OFF tag; PWR+BOOT shortcuts; 10 s power-off.
-- History of the last 5 messages from other boards, paged with PWR (down) / BOOT (up), 3 s PWR hold to replay.
+- History of the last 5 messages from other boards, paged with PWR (down) / BOOT (up), 3 s PWR hold to replay/view.
 - Wi-Fi/name setup portal (hold PWR 5 s) incl. network scan after a failed connect + Rescan link.
 - Persistent "No WiFi" home screen.
-- Battery indicator with plug/unplug tracking and charge offset correction; power latch for battery operation.
+- Battery indicator (on by default now, no setup checkbox) with plug/unplug tracking and charge offset correction;
+  power latch for battery operation.
+- Adaptive polling: once a minute when quiet, every 10 s for 2 min after activity.
 - Remote firmware updates (OTA): signed images, separate admin password, staged rollout, automatic rollback,
   rejection of a tampered image. See README. Release tool: `tools/release.mjs`.
 - Certificate checking for HTTPS (needs the clock; falls back to unchecked after 3 failures).
 - Message ids survive a history clear (server `seq` counter).
+- Backups of `signing/ota_private.pem`, `signing/admin_key.txt` and the family password (NOT in git).
+- Touch board: same chip as the first boards (ESP32-S3-PICO-1, 8 MB / 8 MB), same firmware runs unchanged.
 
 ## Before shipping boards
-- ~~Back up `signing/ota_private.pem`, `signing/admin_key.txt` and the family password~~ (done; they are NOT in git).
-- Overnight/multi-day run with two boards side by side (in progress): dropped messages? stuck screen? Wi-Fi recovery?
 - Test the "wrong Wi-Fi" path once more on the final build (done on an earlier build): bad password -> "No WiFi" ->
   hold PWR 5 s -> portal -> fix.
-- Clear test messages from the server before the family's boards go online:
+- Check each remaining touch board's chip (`esptool chip-id`) before flashing; flash everything over USB at v1
+  (the version tag shows in the screensaver corner) and set each board up with its own name.
+- **Decide about the 400 mAh batteries:** at ~50-60 mA average draw that is only ~6-8 hours on battery. Fine as "keeps
+  running while moved", but the boards will really need USB power (or a bigger battery).
+- Clear test messages from the server (and any test drawings) right before the boards go online:
   `npx wrangler kv key delete --binding MSGS --remote log` (leave the `seq` key alone).
-- Print a one-page setup card for the box (4 steps: plug in, join "TobiaTalk" Wi-Fi, pick Wi-Fi + password + name, Save;
-  hold PWR 5 s to redo it).
-- 5 more TOUCH boards are coming: check each one's chip first (`esptool chip-id`) and Waveshare's pin differences;
-  Waveshare says examples are not interchangeable between hardware versions. The same firmware ignores touch,
-  so it should run, but verify before flashing.
-- Flash every board over USB once with the final firmware at v1 (the version tag shows in the screensaver corner).
+- Print a one-page setup card for the box (plug in, join "TobiaTalk" Wi-Fi, pick Wi-Fi + password + name, Save;
+  hold PWR 5 s to redo it; touch to draw, BOOT sends, PWR clears).
+- The old non-touch test board has no battery and now shows a bogus ~100% (battery indicator defaults on): flash it
+  with `-DBATTERY_INSTALLED=0` (use `arduino-cli compile --clean`) or give it a battery.
 
 ## Next
-- **Battery drain / audio power saving: resolved for now.** Voltage-log A/B runs (see README "Battery") showed switching the
-  audio rail off when idle made drain ~40-50% WORSE, so the default is now `AUDIO_POWER_SAVE 0` (audio always powered).
-  Battery life on always-on Wi-Fi is roughly 1.7-2.2 %/hour (about 2 days from full). A USB power meter is on order: use it to
-  measure real current (idle, Wi-Fi checking) and, if wanted, retry power saving after putting the audio chip's signal
+- **Drawing polish (waiting for a stylus):** gentle smoothing of touch points; a pen-size choice (currently a 3 px pen);
+  maybe an eraser. A passive capacitive stylus with a ~4-6 mm tip works better than a fingertip. Strokes appear in
+  ~0.4 s bursts (the e-paper's redraw time); that is the panel's limit.
+- **Battery drain / audio power saving: UNRESOLVED, default is audio always on.** Voltage-log comparisons first suggested
+  switching the audio rail off made drain worse, but they were estimated from voltage at different points on the battery
+  curve and a later full-range run (always-on firmware, 90% -> 5% in 21 h, ~4 %/h, about 1 day from full) does not fit
+  them. Do NOT trust the percentage comparisons. When the USB power meter arrives (ordered): measure real current for
+  `AUDIO_POWER_SAVE` 0 vs 1 (a few minutes each), then decide. If power saving really leaks, put the audio chip's signal
   pins (GPIO 14/15/16/38/45 I2S, 46 PA_CTRL, 47/48 I2C) in a harmless state before cutting its power. Other drain levers:
-  poll interval (20 s), Wi-Fi light sleep between checks.
-- **When the battery-equipped boards arrive:** every board will have a battery, so drop the "A battery is installed" checkbox
-  from the setup page and make "battery present" the built-in default (e.g. a `BATTERY_INSTALLED 1` constant in
-  `user_app.cpp`; keep the plug/unplug tracking). Consequence: a board with NO battery would then show a bogus ~100%
-  (USB with no battery reads ~4.17 V, the same as a full battery), so the two current test boards need either a
-  battery too or a one-off build with the constant set to 0.
+  Wi-Fi light sleep between checks, running the CPU slower, display/Wi-Fi activity. Re-measure battery life with the
+  meter to see the gain from adaptive polling. Note: touch needs the I2C bus to stay up, so power saving would also need
+  the touch driver to cope with the audio chip's I2C bus being torn down.
 - Verify which TLS mode a board is in (verified vs fallback): add a serial log line.
 - Queue of unplayed messages instead of only the newest.
 - Several saved Wi-Fi networks per device.
 - Setup page niceties: prefill the saved name, on-screen hint to open 192.168.4.1, optional setup-network password.
 - Mic channel/gain, speaker volume: tune with real use.
 - Battery: unknown plug state at boot when started from battery (reads slightly low until the first plug/unplug).
+- Accidental touches: a touch on the send screen starts a drawing (BOOT+PWR or 90 s idle leaves it). Watch for boards
+  that get picked up and start drawing by themselves; if it is a nuisance, require a deliberate gesture.
 
 ## Ideas (not started)
+- **Stickers / stamps** (small preset pictures to place by touch, or sent like canned replies): good drawings without
+  steady hands, works for kids and grandparents.
 - **Networks with a sign-in page (hotel/airport/café/dorm Wi-Fi).** Today a board joins such a network but never
   reaches the server, and the screen shows nothing wrong (the "No WiFi" screen only appears when Wi-Fi itself fails).
   If boards ever need to work there:
@@ -68,10 +79,4 @@ Status: server deployed and tested live (`npm test` for the local tests). Firmwa
     out as a `text` message. Phrase list could come from the setup page or the server.
   - Multi-tap shortcuts (1 tap heart, 2 taps "thinking of you", 3 taps "call me").
   - Slower options if wanted: button-based letter picker, Morse with one button.
-- **Touch version only: drawn images.** Touch drawing into a 200x200 1-bit bitmap (5 KB), sent as a
-  new `drawing` message type (stored like audio, size-checked on the server). Receivers draw it
-  full-screen; non-touch boards can still receive. E-paper refresh is slow, so expect chunky
-  line updates. Needs a separate pixel-level drawing mode (current display path redraws the
-  whole screen each update). Cheaper alternative that works on any board: preset "stickers"
-  (small pictures like a flower or a cake) sent like canned replies.
 - SD card (the board has a TF slot): possible local message log or sounds later.

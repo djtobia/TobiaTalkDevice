@@ -25,11 +25,13 @@
 #include "setup_portal.h"
 #include "ota.h"
 #include "version.h"
+#include "touch.h"
 #include <time.h>
 
 // Implemented in TobiaTalk.ino
 bool example_lvgl_lock(int timeout_ms);
 void example_lvgl_unlock(void);
+extern volatile int g_lvgl_min_delay_ms;   // display task wake-up interval floor (lowered while drawing)
 
 #define LED_PIN          3      // active low
 #define MIN_RECORD_MS    5000
@@ -43,6 +45,11 @@ void example_lvgl_unlock(void);
 #ifndef BATT_DEBUG
 #define BATT_DEBUG 0            // 1 = log battery voltage every 2 s (and keep it in flash; send 'd' to dump, 'c' to clear)
 #endif
+// Every board now ships with a battery, so the battery indicator is on by default. A board with NO battery would show a
+// bogus ~100% (USB with no battery reads like a full battery): build those with -DBATTERY_INSTALLED=0 in build_opt.h.
+#ifndef BATTERY_INSTALLED
+#define BATTERY_INSTALLED 1
+#endif
 #ifndef BATT_DEBUG_MS
 #define BATT_DEBUG_MS 30000     // with BATT_DEBUG: log interval (900 entries kept; 30 s = ~7.5 h)
 #endif
@@ -53,7 +60,11 @@ void example_lvgl_unlock(void);
 #define AUDIO_POWER_SAVE 0
 #endif
 #define POWEROFF_HOLD_MS 10000  // hold PWR+BOOT this long -> power off (battery only); deliberate on purpose
-#define POLL_EVERY_MS   20000
+// Adaptive polling: a quiet board checks the server once a minute (cheap on battery); for 2 minutes after any
+// activity (a message sent, received or played) it checks every 10 s so a back-and-forth conversation stays quick.
+#define POLL_IDLE_MS     60000
+#define POLL_ACTIVE_MS   10000
+#define ACTIVE_WINDOW_MS 120000
 #define MONO_CAP_SAMPLES (16000 * 20)   // matches the server's 20 s limit
 
 epaper_driver_display *driver = NULL;
@@ -90,12 +101,36 @@ static void battery_note_activity();    // defined with the other battery code b
 
 static int g_pending_id = 0;            // newest unseen message from someone else
 static bool g_pending_heart = false;
+static bool g_pending_drawing = false;
 static char g_pending_from[24] = "";
 static uint32_t g_blink_until = 0;      // LED blinks until this time after a new message arrives
+static uint32_t g_active_until = 0;     // polling is fast (POLL_ACTIVE_MS) until this time
 
-struct Msg { int id; char from[24]; bool heart; int seconds; uint32_t age; };
-enum View { V_IDLE, V_HISTORY, V_SAVER };
+struct Msg { int id; char from[24]; bool heart; bool drawing; int seconds; uint32_t age; };
+// V_DRAW: drawing on a touch board. V_VIEW: looking at a received drawing full-screen.
+enum View { V_IDLE, V_HISTORY, V_SAVER, V_DRAW, V_VIEW };
 static View view = V_IDLE;
+
+// ---- drawings: a 200x200 black-and-white picture, 5000 bytes (1 bit per pixel, row-major, MSB first, 1 = black) ----
+#define DRAW_W 200
+#define DRAW_H 200
+#define DRAW_BYTES (DRAW_W * DRAW_H / 8)
+#define DRAW_IDLE_MS 90000                // leave drawing mode (discarding) after this long with no touch
+#define VIEW_MS 60000                     // a received drawing stays up this long
+// If a drawing comes out mirrored or rotated on the real screen, change these (raw touch coordinates -> screen).
+#define TOUCH_SWAP_XY 0
+#define TOUCH_FLIP_X  0
+#define TOUCH_FLIP_Y  0
+static bool g_has_touch = false;          // set at boot: a touch controller answered
+static lv_obj_t *draw_canvas = NULL;      // full-screen canvas, shown only while drawing or viewing
+static lv_color_t *draw_buf = NULL;       // its pixels (80 KB, in PSRAM)
+static lv_obj_t *draw_hint = NULL;        // "BOOT send / PWR clear" until the first stroke
+static lv_obj_t *view_label = NULL;       // "from Mom" while viewing a received drawing
+static uint8_t img_buf[DRAW_BYTES];
+static View view_return = V_IDLE;         // where leaving a received drawing goes back to
+static uint32_t draw_last_input = 0;
+static bool draw_has_ink = false;
+static bool draw_hint_gone = false;       // the "BOOT: send / PWR: clear" hint is hidden (after the first stroke)
 static Msg hist[5];                     // newest first
 static int hist_n = 0, hist_i = 0;
 static uint32_t hist_fetched = 0, view_deadline = 0;
@@ -103,7 +138,11 @@ static uint32_t hist_fetched = 0, view_deadline = 0;
 static void set_status(const char *top, const char *bottom, Icon icon = ICON_NONE, const char *foot = NULL,
                        const char *corner = NULL, bool mini_env = false, bool arrow = false)
 {
+  g_lvgl_min_delay_ms = EXAMPLE_LVGL_TASK_MIN_DELAY_MS;   // normal screens: relaxed display task
   if (example_lvgl_lock(-1)) {
+    lv_obj_add_flag(draw_canvas, LV_OBJ_FLAG_HIDDEN);   // any normal screen leaves the drawing canvas
+    lv_obj_add_flag(draw_hint, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(view_label, LV_OBJ_FLAG_HIDDEN);
     if (arrow) lv_obj_clear_flag(arrow_canvas, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(arrow_canvas, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(off_label, LV_OBJ_FLAG_HIDDEN);   // any normal screen clears the OFF tag
@@ -147,11 +186,15 @@ static void show_idle()
     set_status("No WiFi", "Hold PWR 5s", ICON_NONE, "to set up WiFi");
   } else if (g_pending_id && g_pending_heart) {
     set_status(g_pending_from, "sent a heart", ICON_HEART);
+  } else if (g_pending_id && g_pending_drawing) {
+    snprintf(buf, sizeof(buf), "from %s", g_pending_from);
+    set_status("New drawing", buf, ICON_ENVELOPE);
   } else if (g_pending_id) {
     snprintf(buf, sizeof(buf), "from %s", g_pending_from);
     set_status("New message", buf, ICON_ENVELOPE);
   } else {
-    set_status(g_set.name.c_str(), "Hold to talk", ICON_NONE, "Tap = heart", NULL, false, true);   // arrow -> BOOT button
+    set_status(g_set.name.c_str(), "Hold to talk", ICON_NONE,
+               g_has_touch ? "Tap = heart\nTouch to draw" : "Tap = heart", NULL, false, true);   // arrow -> BOOT button
   }
 }
 
@@ -239,13 +282,17 @@ static void poll_messages()
     if (!g_first_poll && g_set.name != from) {   // skip history and our own messages
       g_pending_id = id;
       g_pending_heart = strcmp(m["type"] | "voice", "heart") == 0;
+      g_pending_drawing = strcmp(m["type"] | "voice", "drawing") == 0;
       strlcpy(g_pending_from, from, sizeof(g_pending_from));
       changed = true;
     }
   }
   g_first_poll = false;
-  if (changed) g_blink_until = millis() + BLINK_MS;   // blink the LED for a few seconds, then stop
-  if (changed && view != V_HISTORY) show_idle();   // also wakes the screensaver
+  if (changed) {
+    g_blink_until = millis() + BLINK_MS;                // blink the LED for a few seconds, then stop
+    g_active_until = millis() + ACTIVE_WINDOW_MS;       // someone is talking: check often for a while
+  }
+  if (changed && view != V_HISTORY && view != V_DRAW && view != V_VIEW) show_idle();   // also wakes the screensaver
 }
 
 static int fetch_history()
@@ -266,6 +313,7 @@ static int fetch_history()
     hist[n].id = m["id"];
     strlcpy(hist[n].from, m["from"] | "Someone", sizeof(hist[n].from));
     hist[n].heart = strcmp(m["type"] | "voice", "heart") == 0;
+    hist[n].drawing = strcmp(m["type"] | "voice", "drawing") == 0;
     hist[n].seconds = m["seconds"] | 0;
     hist[n].age = m["age"] | 0;
     n++;
@@ -280,8 +328,181 @@ static void show_history()
   char age[16], bottom[32];
   format_age(age, sizeof(age), m.age + (millis() - hist_fetched) / 1000);
   snprintf(bottom, sizeof(bottom), "%s %d/%d", age, hist_i + 1, hist_n);
-  set_status(m.from, bottom, m.heart ? ICON_HEART : ICON_NONE, m.heart ? NULL : "Hold PWR for 3 seconds\nto play");
+  set_status(m.from, bottom, m.heart ? ICON_HEART : ICON_NONE,
+             m.heart ? NULL : m.drawing ? "Hold PWR for 3 seconds\nto view" : "Hold PWR for 3 seconds\nto play");
   view_deadline = millis() + 10000;
+}
+
+// ---- drawing: pen, canvas, packing, sending and viewing ----
+// Asks for the canvas to be redrawn. NEVER waits: while the e-paper is redrawing (about half a second) the display
+// task holds the lock, and waiting here would stop the touch chip being read, leaving only a few widely spaced
+// points per stroke (long straight lines). Returns false if the display was busy; the caller simply tries again.
+static bool canvas_refresh()
+{
+  if (!example_lvgl_lock(0)) return false;
+  lv_obj_invalidate(draw_canvas);
+  example_lvgl_unlock();
+  return true;
+}
+
+static void draw_dot(int x, int y)       // 3x3 pen
+{
+  for (int dy = -1; dy <= 1; dy++)
+    for (int dx = -1; dx <= 1; dx++) {
+      int px = x + dx, py = y + dy;
+      if (px >= 0 && px < DRAW_W && py >= 0 && py < DRAW_H) draw_buf[py * DRAW_W + px].full = 0x0000;
+    }
+  draw_has_ink = true;
+}
+
+static void draw_line(int x0, int y0, int x1, int y1)   // Bresenham, so a fast finger leaves no gaps
+{
+  int dx = abs(x1 - x0), sx = x0 < x1 ? 1 : -1;
+  int dy = -abs(y1 - y0), sy = y0 < y1 ? 1 : -1;
+  int err = dx + dy;
+  for (;;) {
+    draw_dot(x0, y0);
+    if (x0 == x1 && y0 == y1) break;
+    int e2 = 2 * err;
+    if (e2 >= dy) { err += dy; x0 += sx; }
+    if (e2 <= dx) { err += dx; y0 += sy; }
+  }
+}
+
+static void canvas_clear()
+{
+  for (int i = 0; i < DRAW_W * DRAW_H; i++) draw_buf[i].full = 0xFFFF;
+  draw_has_ink = false;
+}
+
+static void drawing_pack(uint8_t *out)   // canvas -> 5000 bytes
+{
+  memset(out, 0, DRAW_BYTES);
+  for (int y = 0; y < DRAW_H; y++)
+    for (int x = 0; x < DRAW_W; x++)
+      if (draw_buf[y * DRAW_W + x].full < 0x7fff) out[(y * DRAW_W + x) / 8] |= 0x80 >> (x & 7);
+}
+
+static void drawing_unpack(const uint8_t *in)   // 5000 bytes -> canvas
+{
+  for (int i = 0; i < DRAW_W * DRAW_H; i++) draw_buf[i].full = (in[i / 8] & (0x80 >> (i & 7))) ? 0x0000 : 0xFFFF;
+}
+
+// Raw touch coordinates -> screen coordinates (see TOUCH_* switches at the top).
+static void touch_to_screen(uint16_t rx, uint16_t ry, int *x, int *y)
+{
+  int a = rx, b = ry;
+#if TOUCH_SWAP_XY
+  a = ry; b = rx;
+#endif
+#if TOUCH_FLIP_X
+  a = DRAW_W - 1 - a;
+#endif
+#if TOUCH_FLIP_Y
+  b = DRAW_H - 1 - b;
+#endif
+  *x = constrain(a, 0, DRAW_W - 1);
+  *y = constrain(b, 0, DRAW_H - 1);
+}
+
+static void show_draw_canvas(bool hint)   // makes the canvas (with whatever it holds) the screen
+{
+  g_lvgl_min_delay_ms = 15;                // react to new ink quickly while drawing
+  if (example_lvgl_lock(-1)) {
+    lv_obj_clear_flag(draw_canvas, LV_OBJ_FLAG_HIDDEN);
+    if (hint) lv_obj_clear_flag(draw_hint, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_add_flag(draw_hint, LV_OBJ_FLAG_HIDDEN);
+    draw_hint_gone = !hint;
+    lv_obj_add_flag(view_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(draw_canvas);
+    example_lvgl_unlock();
+  }
+}
+
+static void enter_draw()
+{
+  canvas_clear();
+  view = V_DRAW;
+  draw_last_input = millis();
+  show_draw_canvas(true);
+}
+
+static void exit_draw()                   // leaves drawing mode without sending
+{
+  canvas_clear();
+  show_idle();
+}
+
+static bool fetch_image(int id)           // downloads a drawing into img_buf
+{
+  WiFiClientSecure tls;
+  HTTPClient http;
+  if (!begin_request(http, tls, "/image?id=" + String(id))) return false;
+  if (http.GET() != 200) { http.end(); return false; }
+  int len = http.getSize();
+  if (len != DRAW_BYTES) { http.end(); return false; }
+  WiFiClient *s = http.getStreamPtr();
+  int got = 0;
+  uint32_t t0 = millis();
+  while (got < len && millis() - t0 < 15000 && (http.connected() || s->available())) {
+    int avail = s->available();
+    if (avail) got += s->readBytes(img_buf + got, min(avail, len - got));
+    else vTaskDelay(pdMS_TO_TICKS(5));
+  }
+  http.end();
+  return got == len;
+}
+
+// Downloads and shows a drawing full-screen. Returns false (and says so) if it is gone or offline.
+static bool show_drawing_by_id(int id, const char *from, View return_to)
+{
+  set_status("Loading", from);
+  if (!(online() && fetch_image(id))) {
+    set_status("Drawing", "expired");
+    vTaskDelay(pdMS_TO_TICKS(2000));
+    return false;
+  }
+  drawing_unpack(img_buf);
+  char text[40];
+  snprintf(text, sizeof(text), "from %s", from);
+  if (example_lvgl_lock(-1)) {
+    lv_label_set_text(view_label, text);
+    lv_obj_clear_flag(draw_canvas, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(view_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(draw_hint, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(draw_canvas);
+    example_lvgl_unlock();
+  }
+  view = V_VIEW;
+  view_return = return_to;
+  view_deadline = millis() + VIEW_MS;
+  g_active_until = millis() + ACTIVE_WINDOW_MS;
+  return true;
+}
+
+static void show_history();
+static void exit_view()                   // back from a received drawing
+{
+  canvas_clear();
+  if (view_return == V_HISTORY) { view = V_HISTORY; show_history(); }
+  else show_idle();
+}
+
+static bool send_drawing()
+{
+  if (!online()) return false;
+  uint8_t bits[DRAW_BYTES];
+  drawing_pack(bits);
+  WiFiClientSecure tls;
+  HTTPClient http;
+  String path = "/send?type=drawing&from=" + name_param();
+  if (!begin_request(http, tls, path)) return false;
+  http.addHeader("content-type", "application/octet-stream");
+  int code = http.POST(bits, DRAW_BYTES);
+  http.end();
+  g_active_until = millis() + ACTIVE_WINDOW_MS;
+  battery_note_activity();
+  return code == 200;
 }
 
 // The audio chip and speaker amplifier are only powered while recording or playing: switched off they
@@ -359,6 +580,7 @@ static bool send_message(size_t samples, bool heart)
   http.addHeader("content-type", "application/octet-stream");
   int code = heart ? http.POST("") : http.POST((uint8_t *)mono, samples * 2);
   http.end();
+  g_active_until = millis() + ACTIVE_WINDOW_MS;   // the other side may answer soon: check often for a while
   battery_note_activity();
   return code == 200;
 }
@@ -412,6 +634,7 @@ static bool play_message(int id, const char *from)
   set_status("Playing", from);
   play_samples(n);
   audio_off();
+  g_active_until = millis() + ACTIVE_WINDOW_MS;   // they are engaging with messages: stay responsive
   battery_note_activity();               // the speaker load sagged the battery; don't read that as an unplug
   return true;
 }
@@ -455,17 +678,33 @@ static void on_pwr_short()
     show_idle();
     return;
   }
+  if (view == V_DRAW) {                  // drawing: PWR clears the canvas (a fresh page, hint back)
+    canvas_clear();
+    draw_last_input = millis();
+    show_draw_canvas(true);
+    return;
+  }
+  if (view == V_VIEW) {                  // looking at a received drawing: any button goes back
+    exit_view();
+    return;
+  }
   if (view == V_HISTORY) {               // in history PWR only pages down (next older message), wrapping at the end
     hist_i = (hist_i + 1) % hist_n;
     show_history();
     return;
   }
-  if (g_pending_id) {                    // new message waiting: play it / acknowledge the heart
+  if (g_pending_id) {                    // new message waiting: play it / show it / acknowledge the heart
     int id = g_pending_id;
     bool heart = g_pending_heart;
+    bool drawing = g_pending_drawing;
     char from[24];
     strlcpy(from, g_pending_from, sizeof(from));
     g_pending_id = 0;
+    g_pending_drawing = false;
+    if (drawing) {
+      if (!show_drawing_by_id(id, from, V_IDLE)) show_idle();
+      return;                            // on success the drawing is on screen; a button press brings the home screen back
+    }
     if (!heart) play_message(id, from);
     show_idle();
   } else if (view == V_HISTORY) {
@@ -696,12 +935,13 @@ static void app_task(void *arg)
   set_status("Connecting", "WiFi...");
   wifi_start();
   for (int i = 0; i < 40 && !online(); i++) vTaskDelay(pdMS_TO_TICKS(500));
-  uint32_t last_poll = 0, pwr_t0 = 0, offline_since = millis(), last_batt = 0, last_dbg = 0;
+  uint32_t last_poll = millis() - POLL_IDLE_MS - 1;   // due immediately at start, not a minute after boot
+  uint32_t pwr_t0 = 0, offline_since = millis(), last_batt = 0, last_dbg = 0;
   bool pwr_was_down = false, pwr_consumed = false;
   {
-    Preferences p;                       // has this board ever proven it has a battery?
+    Preferences p;                       // BATTERY_INSTALLED builds always show the indicator; otherwise only once a battery was proven
     p.begin("battery", true);
-    g_batt_seen = p.getBool("seen", false);
+    g_batt_seen = BATTERY_INSTALLED || p.getBool("seen", false);
     p.end();
   }
   g_offline = !online();                 // the 20 s connect attempt above already failed: say so right away
@@ -710,6 +950,32 @@ static void app_task(void *arg)
   for (;;) {
     if (button_down(BOOT_BUTTON_PIN)) {
       int n = 0;
+      if (view == V_VIEW) {              // viewing a received drawing: any button goes back
+        while (button_down(BOOT_BUTTON_PIN)) vTaskDelay(pdMS_TO_TICKS(20));
+        exit_view();
+        pwr_was_down = false;
+        continue;
+      }
+      if (view == V_DRAW) {              // drawing: BOOT sends it; PWR + BOOT together leaves without sending
+        int g = boot_gesture();
+        if (g == BG_COMBO) {
+          while (button_down(BOOT_BUTTON_PIN) || button_down(PWR_BUTTON_PIN)) vTaskDelay(pdMS_TO_TICKS(20));
+          exit_draw();
+          pwr_was_down = false;
+        } else {
+          while (button_down(BOOT_BUTTON_PIN)) vTaskDelay(pdMS_TO_TICKS(20));
+          if (draw_has_ink) {
+            set_status("Sending", "drawing");
+            bool ok = send_drawing();
+            set_status(ok ? "Sent" : "Failed", ok ? "drawing" : online() ? "Try again" : "No WiFi");
+            vTaskDelay(pdMS_TO_TICKS(2500));
+            if (ok) { canvas_clear(); show_idle(); }
+            else { view = V_DRAW; draw_last_input = millis(); show_draw_canvas(false); }   // keep the drawing so it can be sent again
+          }
+        }
+        last_poll = millis();
+        continue;
+      }
       if (view == V_HISTORY) {           // in history BOOT pages up; it does not record (PWR hold replays)
         int g = boot_gesture();
         if (g == BG_COMBO) {
@@ -749,13 +1015,69 @@ static void app_task(void *arg)
     if (pwr_down && !pwr_consumed && view == V_HISTORY && millis() - pwr_t0 >= REPLAY_HOLD_MS) {
       pwr_consumed = true;               // held in history: replay the shown message (and no page-down / setup on release)
       Msg &m = hist[hist_i];
-      if (!m.heart) play_message(m.id, m.from);
-      show_history();
+      if (m.drawing) {
+        if (!show_drawing_by_id(m.id, m.from, V_HISTORY)) show_history();   // on success a button press returns to history
+      } else {
+        if (!m.heart) play_message(m.id, m.from);
+        show_history();
+      }
       last_poll = millis();
     }
-    if (pwr_down && !pwr_consumed && millis() - pwr_t0 >= SETUP_HOLD_MS) enter_setup();
+    if (pwr_down && !pwr_consumed && view != V_DRAW && view != V_VIEW && millis() - pwr_t0 >= SETUP_HOLD_MS) enter_setup();
     if (!pwr_down && pwr_was_down && !pwr_consumed && millis() - pwr_t0 > 30) on_pwr_short();
     pwr_was_down = pwr_down;
+
+    // ---- touch (touch boards only): start a drawing, draw, and time out ----
+    if (g_has_touch) {
+      static bool t_prev = false;                 // finger was down at the last look (so a held finger is not a new touch)
+      static bool t_have_prev_pt = false;
+      static int t_px = 0, t_py = 0;
+      static bool t_dirty = false;
+      static uint32_t t_last_look = 0, t_last_refresh = 0;
+      uint32_t now = millis();
+      if (view == V_DRAW) {
+        uint16_t rx, ry;
+        bool down = touch_read(&rx, &ry);
+        if (down) {
+          int x, y;
+          touch_to_screen(rx, ry, &x, &y);
+          if (t_have_prev_pt) draw_line(t_px, t_py, x, y);
+          else draw_dot(x, y);
+          if (!draw_hint_gone && example_lvgl_lock(0)) {   // first ink of this page: drop the hint (never wait for the display)
+            lv_obj_add_flag(draw_hint, LV_OBJ_FLAG_HIDDEN);
+            example_lvgl_unlock();
+            draw_hint_gone = true;
+          }
+          t_px = x; t_py = y; t_have_prev_pt = true;
+          t_dirty = true;
+          draw_last_input = now;
+        } else {
+          t_have_prev_pt = false;
+        }
+        // The e-paper redraws the whole screen (~0.4 s). Ask for a redraw whenever there is new ink; if the display is
+        // still busy with the last one canvas_refresh() says so and we simply ask again a few ms later.
+        if (t_dirty) {
+          if (canvas_refresh()) {                 // if the display was busy, keep the ink and try again next time round
+            t_dirty = false;
+            t_last_refresh = now;
+          }
+        }
+        if (now - draw_last_input > DRAW_IDLE_MS) { exit_draw(); t_have_prev_pt = false; }
+        t_prev = down;
+      } else if ((view == V_IDLE || view == V_SAVER) && now - t_last_look >= 100) {
+        t_last_look = now;
+        uint16_t rx, ry;
+        bool down = touch_read(&rx, &ry);
+        if (down && !t_prev) {                    // a new touch
+          if (view == V_SAVER) show_idle();       // wakes the screensaver, nothing else
+          else if (!g_pending_id && !g_offline) { enter_draw(); t_have_prev_pt = false; t_dirty = false; }
+        }
+        t_prev = down;
+      } else {
+        t_have_prev_pt = false;
+      }
+    }
+    if (view == V_VIEW && millis() > view_deadline) exit_view();
 
 #if BATT_DEBUG
     // TEMPORARY experiment: log the battery voltage every 2 s so plug/unplug jumps can be measured.
@@ -841,7 +1163,7 @@ static void app_task(void *arg)
       if (g_offline) { g_offline = false; show_idle(); }
     } else if (!g_offline && millis() - offline_since > OFFLINE_MS) {
       g_offline = true;
-      if (view != V_HISTORY) show_idle();
+      if (view != V_HISTORY && view != V_DRAW && view != V_VIEW) show_idle();
     }
 
     if (millis() - last_batt >= 2000) {
@@ -849,11 +1171,13 @@ static void app_task(void *arg)
       last_batt = millis();
     }
 
-    if (millis() - last_poll > POLL_EVERY_MS) {
+    bool active = (int32_t)(g_active_until - millis()) > 0;
+    // Not while drawing: a server check takes a second or two and would stop the touch chip being read mid-stroke.
+    if (view != V_DRAW && millis() - last_poll > (active ? POLL_ACTIVE_MS : POLL_IDLE_MS)) {
       if (online()) poll_messages();
       last_poll = millis();
     }
-    vTaskDelay(pdMS_TO_TICKS(20));
+    vTaskDelay(pdMS_TO_TICKS(view == V_DRAW ? 5 : 20));   // read the touch chip faster while drawing
   }
 }
 
@@ -897,6 +1221,9 @@ void user_app_init(void)
   in.pull_up_en = GPIO_PULLUP_ENABLE;
   in.pin_bit_mask = (1ULL << BOOT_BUTTON_PIN) | (1ULL << PWR_BUTTON_PIN);
   gpio_config(&in);
+
+  g_has_touch = touch_init();            // after the audio codec (they share the I2C bus); false on non-touch boards
+  Serial.printf("[touch] %s\n", g_has_touch ? "touch controller found" : "no touch controller");
 }
 
 void user_ui_init(void)
@@ -997,6 +1324,34 @@ void user_ui_init(void)
   lv_obj_set_style_text_color(corner_label, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_set_style_text_align(corner_label, LV_TEXT_ALIGN_RIGHT, LV_PART_MAIN | LV_STATE_DEFAULT);
   lv_obj_add_flag(corner_label, LV_OBJ_FLAG_HIDDEN);
+
+  // Drawing canvas: full screen, created last so it (and its labels) sit on top of everything else. Hidden except
+  // while drawing or viewing a drawing. Its pixels live in PSRAM (200x200x2 bytes).
+  draw_buf = (lv_color_t *)heap_caps_malloc(DRAW_W * DRAW_H * sizeof(lv_color_t), MALLOC_CAP_SPIRAM);
+  draw_canvas = lv_canvas_create(src_ui.screen);
+  lv_canvas_set_buffer(draw_canvas, draw_buf, DRAW_W, DRAW_H, LV_IMG_CF_TRUE_COLOR);
+  canvas_clear();
+  lv_obj_set_pos(draw_canvas, 0, 0);
+  lv_obj_add_flag(draw_canvas, LV_OBJ_FLAG_HIDDEN);
+
+  draw_hint = lv_label_create(src_ui.screen);
+  lv_label_set_text(draw_hint, "BOOT: send   PWR: clear");
+  lv_obj_set_style_text_font(draw_hint, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_text_color(draw_hint, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(draw_hint, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_opa(draw_hint, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_align(draw_hint, LV_ALIGN_BOTTOM_MID, 0, -4);
+  lv_obj_add_flag(draw_hint, LV_OBJ_FLAG_HIDDEN);
+
+  view_label = lv_label_create(src_ui.screen);
+  lv_label_set_text(view_label, "");
+  lv_obj_set_style_text_font(view_label, &lv_font_montserrat_14, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_text_color(view_label, lv_color_black(), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_color(view_label, lv_color_white(), LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_bg_opa(view_label, LV_OPA_COVER, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_style_pad_all(view_label, 2, LV_PART_MAIN | LV_STATE_DEFAULT);
+  lv_obj_set_pos(view_label, 0, 0);
+  lv_obj_add_flag(view_label, LV_OBJ_FLAG_HIDDEN);
 
   xTaskCreatePinnedToCore(app_task, "app_task", 16 * 1024, NULL, 3, NULL, 0);
 }
