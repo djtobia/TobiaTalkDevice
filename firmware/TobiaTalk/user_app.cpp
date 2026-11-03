@@ -50,6 +50,12 @@ extern volatile int g_lvgl_min_delay_ms;   // display task wake-up interval floo
 #ifndef BATTERY_INSTALLED
 #define BATTERY_INSTALLED 1
 #endif
+#ifndef DRAWING_ENABLED
+#define DRAWING_ENABLED 0       // 1: touching the send screen starts a drawing (touch boards). Receiving/viewing always works
+#endif
+#ifndef CPU_MHZ
+#define CPU_MHZ 80              // processor speed: 80 (battery-friendly) or 240 (original); Wi-Fi needs >= 80
+#endif
 #ifndef BATT_DEBUG_MS
 #define BATT_DEBUG_MS 30000     // with BATT_DEBUG: log interval (900 entries kept; 30 s = ~7.5 h)
 #endif
@@ -249,6 +255,16 @@ static String name_param()
   return n;
 }
 
+// Heavy computing (the secure handshake with the server, firmware signature checks) is CPU-bound, so it is cheaper in
+// energy to do it fast and then drop back: the radio and board draw power the whole time it takes. Creating one of
+// these at the top of a function runs it at 240 MHz and restores CPU_MHZ when it ends (nesting is fine).
+struct CpuBoost {
+  static int depth;
+  CpuBoost()  { if (CPU_MHZ < 240 && depth++ == 0) setCpuFrequencyMhz(240); }
+  ~CpuBoost() { if (CPU_MHZ < 240 && --depth == 0) setCpuFrequencyMhz(CPU_MHZ); }
+};
+int CpuBoost::depth = 0;
+
 static bool begin_request(HTTPClient &http, WiFiClientSecure &tls, const String &path)
 {
   tls_setup(tls);
@@ -260,6 +276,7 @@ static bool begin_request(HTTPClient &http, WiFiClientSecure &tls, const String 
 
 static void poll_messages()
 {
+  CpuBoost boost;
   WiFiClientSecure tls;
   HTTPClient http;
   String path = "/messages?since=" + String(g_last_id) + "&v=" + String(FW_VERSION) + "&me=" + name_param();
@@ -297,6 +314,7 @@ static void poll_messages()
 
 static int fetch_history()
 {
+  CpuBoost boost;
   WiFiClientSecure tls;
   HTTPClient http;
   // The server leaves out this board's own messages, so history only shows what others sent.
@@ -435,6 +453,7 @@ static void exit_draw()                   // leaves drawing mode without sending
 
 static bool fetch_image(int id)           // downloads a drawing into img_buf
 {
+  CpuBoost boost;
   WiFiClientSecure tls;
   HTTPClient http;
   if (!begin_request(http, tls, "/image?id=" + String(id))) return false;
@@ -490,6 +509,7 @@ static void exit_view()                   // back from a received drawing
 
 static bool send_drawing()
 {
+  CpuBoost boost;
   if (!online()) return false;
   uint8_t bits[DRAW_BYTES];
   drawing_pack(bits);
@@ -570,6 +590,7 @@ static int record_message()
 
 static bool send_message(size_t samples, bool heart)
 {
+  CpuBoost boost;
   if (!online()) return false;
   WiFiClientSecure tls;
   HTTPClient http;
@@ -587,6 +608,7 @@ static bool send_message(size_t samples, bool heart)
 
 static size_t fetch_audio(int id)
 {
+  CpuBoost boost;
   WiFiClientSecure tls;
   HTTPClient http;
   if (!begin_request(http, tls, "/audio?id=" + String(id))) return 0;
@@ -643,6 +665,7 @@ static bool play_message(int id, const char *from)
 // connection is retried once unverified (otherwise a changed CA could block the fix).
 static bool run_ota(String &err)
 {
+  CpuBoost boost;                        // the download and the signature check are heavy
   for (int attempt = 0; attempt < 2; attempt++) {
     WiFiClientSecure tls;
     if (attempt == 0) tls_setup(tls);
@@ -1070,7 +1093,7 @@ static void app_task(void *arg)
         bool down = touch_read(&rx, &ry);
         if (down && !t_prev) {                    // a new touch
           if (view == V_SAVER) show_idle();       // wakes the screensaver, nothing else
-          else if (!g_pending_id && !g_offline) { enter_draw(); t_have_prev_pt = false; t_dirty = false; }
+          else if (DRAWING_ENABLED && !g_pending_id && !g_offline) { enter_draw(); t_have_prev_pt = false; t_dirty = false; }
         }
         t_prev = down;
       } else {
@@ -1183,6 +1206,10 @@ static void app_task(void *arg)
 
 void user_app_init(void)
 {
+  // Battery: run the processor at 80 MHz instead of the 240 MHz boot default (the Wi-Fi radio needs at least 80).
+  // The buses (SPI display, I2C, I2S audio) run from a separate 80 MHz clock and are unaffected. Busy bursts such as
+  // the secure connection to the server take longer but at a much lower power. Compare with -DCPU_MHZ=240.
+  setCpuFrequencyMhz(CPU_MHZ);
   mono = (int16_t *)heap_caps_malloc(MONO_CAP_SAMPLES * sizeof(int16_t), MALLOC_CAP_SPIRAM);
   board_div.VBAT_POWER_ON();             // latch: on battery the board would shut off when PWR is released
   board_div.POWEER_EPD_ON();

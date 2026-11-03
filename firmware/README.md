@@ -31,4 +31,7 @@ just the firmware build notes.
 
 ## Notes
 - Opening the board's USB serial port resets it.
+- Build switches at the top of `user_app.cpp`: `CPU_MHZ` (80 default, raised to 240 only during server requests),
+  `DRAWING_ENABLED` (0: touch drawing off), `BATTERY_INSTALLED`, `AUDIO_POWER_SAVE`.
+- A USB power meter between the PC and the board can block flashing; flash with the board plugged straight into the PC.
 - Firmware is ~1.46 MB of a 1.97 MB app slot.

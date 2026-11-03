@@ -14,6 +14,8 @@ server is offering no firmware update.
 - Battery indicator (on by default now, no setup checkbox) with plug/unplug tracking and charge offset correction;
   power latch for battery operation.
 - Adaptive polling: once a minute when quiet, every 10 s for 2 min after activity.
+- CPU at 80 MHz, 240 MHz only during server requests (`CPU_MHZ`, `CpuBoost` in `user_app.cpp`). USB meter, battery full,
+  touch board idle: 53 mA (blips ~100 mA) vs 81 mA (blips 134 mA) at 240 MHz. About 7 h on the 400 mAh battery.
 - Remote firmware updates (OTA): signed images, separate admin password, staged rollout, automatic rollback,
   rejection of a tampered image. See README. Release tool: `tools/release.mjs`.
 - Certificate checking for HTTPS (needs the clock; falls back to unchecked after 3 failures).
@@ -36,16 +38,18 @@ server is offering no firmware update.
   with `-DBATTERY_INSTALLED=0` (use `arduino-cli compile --clean`) or give it a battery.
 
 ## Next
+- **Drawing is switched off for now** (`DRAWING_ENABLED 0` in `user_app.cpp`; touching the screen does nothing).
+  Boards still receive and view drawings. Set it to 1 to draw again.
 - **Drawing polish (waiting for a stylus):** gentle smoothing of touch points; a pen-size choice (currently a 3 px pen);
   maybe an eraser. A passive capacitive stylus with a ~4-6 mm tip works better than a fingertip. Strokes appear in
   ~0.4 s bursts (the e-paper's redraw time); that is the panel's limit.
 - **Battery drain / audio power saving: UNRESOLVED, default is audio always on.** Voltage-log comparisons first suggested
   switching the audio rail off made drain worse, but they were estimated from voltage at different points on the battery
   curve and a later full-range run (always-on firmware, 90% -> 5% in 21 h, ~4 %/h, about 1 day from full) does not fit
-  them. Do NOT trust the percentage comparisons. When the USB power meter arrives (ordered): measure real current for
+  them. Do NOT trust the percentage comparisons. The USB meter has arrived (idle 53 mA at 80 MHz): measure real current for
   `AUDIO_POWER_SAVE` 0 vs 1 (a few minutes each), then decide. If power saving really leaks, put the audio chip's signal
   pins (GPIO 14/15/16/38/45 I2S, 46 PA_CTRL, 47/48 I2C) in a harmless state before cutting its power. Other drain levers:
-  Wi-Fi light sleep between checks, running the CPU slower, display/Wi-Fi activity. Re-measure battery life with the
+  Wi-Fi light sleep between checks, display/Wi-Fi activity (the CPU slowdown is done). Measure with the board on the meter and the battery full; a charging battery hides the idle draw. Re-measure battery life with the
   meter to see the gain from adaptive polling. Note: touch needs the I2C bus to stay up, so power saving would also need
   the touch driver to cope with the audio chip's I2C bus being torn down.
 - Verify which TLS mode a board is in (verified vs fallback): add a serial log line.
@@ -58,6 +62,8 @@ server is offering no firmware update.
   that get picked up and start drawing by themselves; if it is a nuisance, require a deliberate gesture.
 
 ## Ideas (not started)
+- **LED ring box** (colour per user, lights on every board when someone sends): wiring, parts and firmware plan in
+  `docs/led-ring-box.md`. Data goes over the USB-C cable's D+ wire (GPIO20); schematic checked.
 - **Stickers / stamps** (small preset pictures to place by touch, or sent like canned replies): good drawings without
   steady hands, works for kids and grandparents.
 - **Networks with a sign-in page (hotel/airport/café/dorm Wi-Fi).** Today a board joins such a network but never
