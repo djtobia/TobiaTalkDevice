@@ -60,10 +60,10 @@ extern volatile int g_lvgl_min_delay_ms;   // display task wake-up interval floo
 #define BATT_DEBUG_MS 30000     // with BATT_DEBUG: log interval (900 entries kept; 30 s = ~7.5 h)
 #endif
 #ifndef AUDIO_POWER_SAVE
-// 0 = audio chip stays powered (default). 1 = audio rail only on while recording/playing. Measured on a
-// battery board: 1 drained ~40-50 % FASTER (about 3 %/h vs 2 %/h), most likely a leak into the unpowered codec/amp
-// through signal pins still driven by the processor. Left in for a retry; see TODO.md.
-#define AUDIO_POWER_SAVE 0
+// 1 = audio rail only on while recording/playing (default). 0 = audio chip stays powered. USB meter, battery full,
+// touch board at 80 MHz: idle 32 mA (20 min average 33 mA) with 1, vs 53 mA idle with 0. Touch drawing needs the I2C
+// bus the codec shares, so keep DRAWING_ENABLED 0 while this is 1.
+#define AUDIO_POWER_SAVE 1
 #endif
 #define POWEROFF_HOLD_MS 10000  // hold PWR+BOOT this long -> power off (battery only); deliberate on purpose
 // Adaptive polling: a quiet board checks the server once a minute (cheap on battery); for 2 minutes after any

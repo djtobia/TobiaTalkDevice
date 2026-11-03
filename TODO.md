@@ -43,15 +43,14 @@ server is offering no firmware update.
 - **Drawing polish (waiting for a stylus):** gentle smoothing of touch points; a pen-size choice (currently a 3 px pen);
   maybe an eraser. A passive capacitive stylus with a ~4-6 mm tip works better than a fingertip. Strokes appear in
   ~0.4 s bursts (the e-paper's redraw time); that is the panel's limit.
-- **Battery drain / audio power saving: UNRESOLVED, default is audio always on.** Voltage-log comparisons first suggested
-  switching the audio rail off made drain worse, but they were estimated from voltage at different points on the battery
-  curve and a later full-range run (always-on firmware, 90% -> 5% in 21 h, ~4 %/h, about 1 day from full) does not fit
-  them. Do NOT trust the percentage comparisons. The USB meter has arrived (idle 53 mA at 80 MHz): measure real current for
-  `AUDIO_POWER_SAVE` 0 vs 1 (a few minutes each), then decide. If power saving really leaks, put the audio chip's signal
-  pins (GPIO 14/15/16/38/45 I2S, 46 PA_CTRL, 47/48 I2C) in a harmless state before cutting its power. Other drain levers:
-  Wi-Fi light sleep between checks, display/Wi-Fi activity (the CPU slowdown is done). Measure with the board on the meter and the battery full; a charging battery hides the idle draw. Re-measure battery life with the
-  meter to see the gain from adaptive polling. Note: touch needs the I2C bus to stay up, so power saving would also need
-  the touch driver to cope with the audio chip's I2C bus being torn down.
+- **Battery drain: audio power saving is ON by default now** (`AUDIO_POWER_SAVE 1`). Measured with a USB meter (battery
+  full, touch board, 80 MHz): idle 32 mA, 20 min average 33 mA (11 mAh), Wi-Fi checks peak ~200 mA; always-on audio idled at
+  53 mA. About 12 h on the 400 mAh battery. The early voltage-log comparisons that said power saving drained more were
+  wrong (percent at different points of the battery curve). Record + playback checked on the touch board.
+  Other levers: Wi-Fi light sleep between checks, display/Wi-Fi activity, deep sleep. Measure with the board on the meter
+  and the battery full; a charging battery hides the idle draw. A meter in the USB path can block flashing.
+  Touch needs the I2C bus the codec shares, so re-enabling drawing needs the touch driver to cope with it being torn down.
+  Not yet re-checked on the two non-touch boards.
 - Verify which TLS mode a board is in (verified vs fallback): add a serial log line.
 - Queue of unplayed messages instead of only the newest.
 - Several saved Wi-Fi networks per device.
