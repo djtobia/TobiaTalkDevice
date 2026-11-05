@@ -1,8 +1,9 @@
 # TobiaTalk TODO
 
-Status: server deployed and tested live (`npm test` for the local tests). Firmware runs on three boards: two
-non-touch V2 (one with a 3000 mAh battery, one with none) and one touch V2 with a 400 mAh battery. All show v1; the
-server is offering no firmware update.
+Status: server deployed and tested live (`npm test` for the local tests). Three boards on the desk: two non-touch V2
+(one with a 3000 mAh battery, one with none) and one touch V2 with a 400 mAh battery. The touch board and the no-battery
+board have the newest firmware (icon pack); the 3000 mAh board is a build behind. All show v1; the server is offering no
+firmware update. Drawing is switched off (`DRAWING_ENABLED 0`).
 
 ## Done and tested on hardware
 - Voice messages, hearts, **drawings** (touch boards draw; every board receives and views them), envelope/heart icons,
@@ -14,12 +15,12 @@ server is offering no firmware update.
 - Battery indicator (on by default now, no setup checkbox) with plug/unplug tracking and charge offset correction;
   power latch for battery operation.
 - Adaptive polling: once a minute when quiet, every 10 s for 2 min after activity.
-- Icon pack (code written, compiled, server deployed, NOT yet tried on a board): heart, smiley, star, sun, moon, tree.
-  Chosen per board on the setup page, sent by a BOOT tap. Setup page prefills name/icon and can keep the current Wi-Fi.
-  Also changeable on the device: triple-tap PWR opens a picker (PWR next, BOOT save). Buttons only: touch is not used
-  because the touch chip shares the audio chip's I2C bus, which audio power saving switches off.
-  Test: flash a board, triple-tap PWR, pick an icon, tap BOOT, check another board shows it and history shows it;
-  check a normal single PWR tap still plays/opens history (now ~0.45 s late on the home screen).
+- Icon pack, tested on the touch board and a non-touch board (sent both ways, shown on screen): heart, smiley, star, sun,
+  moon, tree. Chosen per board on the setup page or on the device: triple-tap PWR opens a picker (PWR next, BOOT save,
+  PWR+BOOT cancels), and a BOOT tap sends it. Buttons only: touch is not used because the touch chip shares the audio
+  chip's I2C bus, which audio power saving switches off. A single PWR tap on the home screen now waits ~0.45 s (to see if
+  two more follow). Setup page prefills name/icon and can keep the current Wi-Fi. Server accepts `type=icon`; boards from
+  before the pack show the new icons as a failed voice message, so every board needs this firmware before shipping.
 - CPU at 80 MHz, 240 MHz only during server requests (`CPU_MHZ`, `CpuBoost` in `user_app.cpp`). USB meter, battery full,
   touch board idle: 53 mA (blips ~100 mA) vs 81 mA (blips 134 mA) at 240 MHz. About 7 h on the 400 mAh battery.
 - Remote firmware updates (OTA): signed images, separate admin password, staged rollout, automatic rollback,
@@ -34,14 +35,15 @@ server is offering no firmware update.
   hold PWR 5 s -> portal -> fix.
 - Check each remaining touch board's chip (`esptool chip-id`) before flashing; flash everything over USB at v1
   (the version tag shows in the screensaver corner) and set each board up with its own name.
-- **Decide about the 400 mAh batteries:** at ~50-60 mA average draw that is only ~6-8 hours on battery. Fine as "keeps
-  running while moved", but the boards will really need USB power (or a bigger battery).
+- **Decide about the 400 mAh batteries:** at the measured ~33 mA average (80 MHz, audio power saving) that is about 12
+  hours on battery. Fine as "keeps running while moved", but the boards will really need USB power (or a bigger battery).
 - Clear test messages from the server (and any test drawings) right before the boards go online:
   `npx wrangler kv key delete --binding MSGS --remote log` (leave the `seq` key alone).
 - Print a one-page setup card for the box (plug in, join "TobiaTalk" Wi-Fi, pick Wi-Fi + password + name, Save;
-  hold PWR 5 s to redo it; touch to draw, BOOT sends, PWR clears).
-- The old non-touch test board has no battery and now shows a bogus ~100% (battery indicator defaults on): flash it
-  with `-DBATTERY_INSTALLED=0` (use `arduino-cli compile --clean`) or give it a battery.
+  hold PWR 5 s to redo it; BOOT tap sends the icon, triple-tap PWR changes it).
+- Flash every remaining board (the 3000 mAh board and the other touch boards) with the current firmware. The no-battery
+  non-touch board (COM7) is flashed with `-DBATTERY_INSTALLED=0`; any other board without a battery needs that too
+  (`arduino-cli compile --clean --build-property "compiler.cpp.extra_flags=-DBATTERY_INSTALLED=0"`), or give it a battery.
 
 ## Next
 - **Drawing is switched off for now** (`DRAWING_ENABLED 0` in `user_app.cpp`; touching the screen does nothing).
