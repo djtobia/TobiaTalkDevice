@@ -2,6 +2,7 @@
 //  BOOT hold  : record a voice message (min 5 s, max 15 s), release to send
 //  BOOT tap   : send a heart (in history view: replay the shown message)
 //  PWR tap    : play the waiting message, else browse the last 5 messages
+//  PWR x3     : pick the quick-send icon (PWR next, BOOT save)
 //  PWR 5 s    : Wi-Fi / name setup portal
 // Other boards poll the relay; new messages blink the LED.
 #include <stdio.h>
@@ -134,7 +135,12 @@ static uint32_t g_active_until = 0;     // polling is fast (POLL_ACTIVE_MS) unti
 
 struct Msg { int id; char from[24]; Icon icon; bool drawing; int seconds; uint32_t age; };   // icon: ICON_NONE = voice/drawing
 // V_DRAW: drawing on a touch board. V_VIEW: looking at a received drawing full-screen.
-enum View { V_IDLE, V_HISTORY, V_SAVER, V_DRAW, V_VIEW };
+// V_PICK: choosing the quick-send icon (triple tap on PWR from the home screen or screensaver).
+enum View { V_IDLE, V_HISTORY, V_SAVER, V_DRAW, V_VIEW, V_PICK };
+#define TRIPLE_TAP_MS 450               // three PWR taps, each within this long of the last, open the icon picker
+#define PICK_IDLE_MS  30000             // the picker closes by itself (nothing saved) after this long
+static int pick_sel = 0;                // highlighted icon (index into QUICK_IDS)
+static uint32_t pick_last = 0;          // last button press in the picker
 static View view = V_IDLE;
 
 // ---- drawings: a 200x200 black-and-white picture, 5000 bytes (1 bit per pixel, row-major, MSB first, 1 = black) ----
@@ -206,17 +212,22 @@ static bool quick_pixel(Icon icon, int px, int py, const float (*star)[2])
   }
 }
 
-static void paint_quick(Icon icon)       // call with the LVGL lock held
+static void star_points(float (*star)[2])   // five points: outer radius 35, inner 14
 {
-  static Icon painted = ICON_NONE;
-  if (painted == icon) return;
-  painted = icon;
-  float star[10][2];                     // five points: outer radius 35, inner 14
   for (int k = 0; k < 10; k++) {
     float a = -1.5707963f + k * 0.62831853f, r = (k & 1) ? 14.0f : 35.0f;
     star[k][0] = 39.5f + r * cosf(a);
     star[k][1] = 36.0f + r * sinf(a);
   }
+}
+
+static void paint_quick(Icon icon)       // call with the LVGL lock held
+{
+  static Icon painted = ICON_NONE;
+  if (painted == icon) return;
+  painted = icon;
+  float star[10][2];
+  star_points(star);
   lv_canvas_fill_bg(quick_canvas, lv_color_white(), LV_OPA_COVER);
   for (int py = 0; py < 70; py++)
     for (int px = 0; px < 80; px++)
@@ -395,7 +406,7 @@ static void poll_messages()
     g_blink_until = millis() + BLINK_MS;                // blink the LED for a few seconds, then stop
     g_active_until = millis() + ACTIVE_WINDOW_MS;       // someone is talking: check often for a while
   }
-  if (changed && view != V_HISTORY && view != V_DRAW && view != V_VIEW) show_idle();   // also wakes the screensaver
+  if (changed && view != V_HISTORY && view != V_DRAW && view != V_VIEW && view != V_PICK) show_idle();   // also wakes the screensaver
 }
 
 static int fetch_history()
@@ -514,6 +525,7 @@ static void show_draw_canvas(bool hint)   // makes the canvas (with whatever it 
   g_lvgl_min_delay_ms = 15;                // react to new ink quickly while drawing
   if (example_lvgl_lock(-1)) {
     lv_obj_clear_flag(draw_canvas, LV_OBJ_FLAG_HIDDEN);
+    lv_label_set_text(draw_hint, "BOOT: send   PWR: clear");   // the icon picker borrows this label
     if (hint) lv_obj_clear_flag(draw_hint, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(draw_hint, LV_OBJ_FLAG_HIDDEN);
     draw_hint_gone = !hint;
@@ -534,6 +546,64 @@ static void enter_draw()
 static void exit_draw()                   // leaves drawing mode without sending
 {
   canvas_clear();
+  show_idle();
+}
+
+// ---- quick-send icon picker: all six icons small in a 3x2 grid on the full-screen canvas, the chosen one framed ----
+// Buttons only, so it works on every board: PWR moves the frame, BOOT saves the choice, PWR + BOOT cancels.
+// (The touch chip shares the audio chip's I2C bus, which audio power saving switches off, so touch is not used here.)
+static void paint_picker()                // call with the LVGL lock held
+{
+  const float scale = 0.65f;              // each 80x70 icon is drawn 52x45 inside a 64x70 cell
+  float star[10][2];
+  star_points(star);
+  for (int i = 0; i < DRAW_W * DRAW_H; i++) draw_buf[i].full = 0xFFFF;
+  for (int k = 0; k < QUICK_COUNT; k++) {
+    int cx = 4 + (k % 3) * 64, cy = 30 + (k / 3) * 70;
+    for (int dy = 0; dy < 45; dy++)
+      for (int dx = 0; dx < 52; dx++) {
+        int sx = min(79, (int)(dx / scale)), sy = min(69, (int)(dy / scale));
+        if (quick_pixel((Icon)(ICON_HEART + k), sx, sy, (const float (*)[2])star)) draw_buf[(cy + 12 + dy) * DRAW_W + cx + 6 + dx].full = 0x0000;
+      }
+    if (k == pick_sel)                    // 3 px frame, inset 1 px from the cell edge
+      for (int y = cy + 1; y <= cy + 68; y++)
+        for (int x = cx + 1; x <= cx + 62; x++)
+          if (x < cx + 4 || x > cx + 59 || y < cy + 4 || y > cy + 65) draw_buf[y * DRAW_W + x].full = 0x0000;
+  }
+}
+
+static void show_picker()
+{
+  g_lvgl_min_delay_ms = EXAMPLE_LVGL_TASK_MIN_DELAY_MS;
+  pick_last = millis();
+  if (example_lvgl_lock(-1)) {
+    paint_picker();
+    char title[32];
+    snprintf(title, sizeof(title), "Quick send: %s", QUICK_IDS[pick_sel]);
+    lv_label_set_text(view_label, title);
+    lv_label_set_text(draw_hint, "PWR: next   BOOT: pick");
+    lv_obj_clear_flag(draw_canvas, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(draw_hint, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(view_label, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_invalidate(draw_canvas);
+    example_lvgl_unlock();
+  }
+}
+
+static void enter_picker()
+{
+  view = V_PICK;
+  pick_sel = (int)g_my_icon - ICON_HEART;
+  show_picker();
+}
+
+static void save_pick()                   // BOOT in the picker: remember the icon (survives restarts), confirm, go home
+{
+  g_my_icon = (Icon)(ICON_HEART + pick_sel);
+  g_set.icon = QUICK_IDS[pick_sel];
+  settings_save(g_set);
+  set_status("Saved", quick_id(g_my_icon), g_my_icon);
+  vTaskDelay(pdMS_TO_TICKS(1800));
   show_idle();
 }
 
@@ -787,6 +857,11 @@ static void on_pwr_short()
 {
   if (view == V_SAVER) {                 // wake the screensaver back to the send screen
     show_idle();
+    return;
+  }
+  if (view == V_PICK) {                  // icon picker: PWR moves the frame to the next icon
+    pick_sel = (pick_sel + 1) % QUICK_COUNT;
+    show_picker();
     return;
   }
   if (view == V_DRAW) {                  // drawing: PWR clears the canvas (a fresh page, hint back)
@@ -1052,6 +1127,8 @@ static void app_task(void *arg)
   uint32_t last_poll = millis() - POLL_IDLE_MS - 1;   // due immediately at start, not a minute after boot
   uint32_t pwr_t0 = 0, offline_since = millis(), last_batt = 0, last_dbg = 0;
   bool pwr_was_down = false, pwr_consumed = false;
+  int pwr_taps = 0;                      // PWR taps counted on the home screen (three open the icon picker)
+  uint32_t pwr_tap_t = 0;
   {
     Preferences p;                       // BATTERY_INSTALLED builds always show the indicator; otherwise only once a battery was proven
     p.begin("battery", true);
@@ -1087,6 +1164,15 @@ static void app_task(void *arg)
             else { view = V_DRAW; draw_last_input = millis(); show_draw_canvas(false); }   // keep the drawing so it can be sent again
           }
         }
+        last_poll = millis();
+        continue;
+      }
+      if (view == V_PICK) {              // icon picker: BOOT saves the highlighted icon; PWR + BOOT cancels
+        int g = boot_gesture();
+        while (button_down(BOOT_BUTTON_PIN) || (g == BG_COMBO && button_down(PWR_BUTTON_PIN))) vTaskDelay(pdMS_TO_TICKS(20));
+        if (g == BG_COMBO) show_idle();
+        else save_pick();
+        pwr_was_down = false;            // the PWR release must not count as a tap
         last_poll = millis();
         continue;
       }
@@ -1138,7 +1224,21 @@ static void app_task(void *arg)
       last_poll = millis();
     }
     if (pwr_down && !pwr_consumed && view != V_DRAW && view != V_VIEW && millis() - pwr_t0 >= SETUP_HOLD_MS) enter_setup();
-    if (!pwr_down && pwr_was_down && !pwr_consumed && millis() - pwr_t0 > 30) on_pwr_short();
+    if (!pwr_down && pwr_was_down && !pwr_consumed && millis() - pwr_t0 > 30) {
+      if (view == V_IDLE || view == V_SAVER) {   // home/screensaver: hold the tap back briefly to see if two more follow
+        pwr_taps++;
+        pwr_tap_t = millis();
+      } else {
+        on_pwr_short();
+      }
+    }
+    if (pwr_taps && !pwr_down && millis() - pwr_tap_t > TRIPLE_TAP_MS) {
+      int taps = pwr_taps;
+      pwr_taps = 0;
+      if (view != V_IDLE && view != V_SAVER) { /* the screen changed while waiting: drop the taps */ }
+      else if (taps >= 3) enter_picker();
+      else on_pwr_short();               // one or two taps: the usual single tap
+    }
     pwr_was_down = pwr_down;
 
     // ---- touch (touch boards only): start a drawing, draw, and time out ----
@@ -1242,6 +1342,7 @@ static void app_task(void *arg)
 #endif
 
     if (view == V_HISTORY && millis() > view_deadline) show_idle();
+    if (view == V_PICK && millis() - pick_last > PICK_IDLE_MS) show_idle();   // walked away: nothing saved
     // A waiting message no longer blocks the screensaver: it shows a little envelope in the corner.
     if (view == V_IDLE && !g_offline && millis() - last_activity > SAVER_MS) show_saver();
 
@@ -1277,7 +1378,7 @@ static void app_task(void *arg)
       if (g_offline) { g_offline = false; show_idle(); }
     } else if (!g_offline && millis() - offline_since > OFFLINE_MS) {
       g_offline = true;
-      if (view != V_HISTORY && view != V_DRAW && view != V_VIEW) show_idle();
+      if (view != V_HISTORY && view != V_DRAW && view != V_VIEW && view != V_PICK) show_idle();
     }
 
     if (millis() - last_batt >= 2000) {

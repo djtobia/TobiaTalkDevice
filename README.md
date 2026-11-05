@@ -35,7 +35,8 @@ Two buttons, **BOOT** and **PWR**. What they do depends on the screen:
 | Send screen | Hold **BOOT** | Records (LED on), at least 5 s, at most 15 s; release to send |
 | Send screen | Tap **BOOT** (under 0.4 s) | Sends this person's quick-send icon (heart, smiley, star, sun, moon or tree: chosen in setup) |
 | Send screen (touch boards) | **Touch the screen** | Starts a drawing, only if `DRAWING_ENABLED` is 1 (off by default) |
-| Send screen | Tap **PWR** | Opens history (last 5 messages from *other* boards, newest first) |
+| Send screen | Tap **PWR** | Opens history (last 5 messages from *other* boards, newest first). On the send screen and screensaver a tap waits ~0.45 s to see whether two more follow |
+| Send screen / screensaver | Tap **PWR** three times quickly | Opens the quick-send icon picker: **PWR** moves the frame, **BOOT** saves, **PWR + BOOT** (or 30 s idle) cancels |
 | New message waiting | Tap **PWR** | Plays it / shows the drawing (an icon is just acknowledged) |
 | History | Tap **PWR** | Next older message (wraps around) |
 | History | Tap **BOOT** | Previous (newer) message (wraps around) |
@@ -51,7 +52,8 @@ Screens and indicators:
 - **Send screen** (name, "Hold to talk") is home. After 15 s idle a heart screensaver ("Tobia Talk Device",
   name, firmware version top-right) appears. E-paper keeps the image with no power, so it is also what an
   unplugged board shows.
-- **Icon pack:** each board picks what its BOOT tap sends on the setup page (hold PWR 5 s): heart, smiley face ("sent a
+- **Icon pack:** each board picks what its BOOT tap sends, either on the device (triple-tap PWR, buttons only, works on every
+  board) or on the setup page (hold PWR 5 s): heart, smiley face ("sent a
   smile"), star, sun ("Good morning"), moon ("Good night") or Christmas tree ("Merry Xmas"). The send screen shows the
   chosen name ("Tap = smile"); receivers see the picture with the sender's name. The setup page remembers the name and
   icon, and offers "Keep my current Wi-Fi" (ticked when the board is online) so changing the icon needs no password. Icons

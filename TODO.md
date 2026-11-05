@@ -16,7 +16,10 @@ server is offering no firmware update.
 - Adaptive polling: once a minute when quiet, every 10 s for 2 min after activity.
 - Icon pack (code written, compiled, server deployed, NOT yet tried on a board): heart, smiley, star, sun, moon, tree.
   Chosen per board on the setup page, sent by a BOOT tap. Setup page prefills name/icon and can keep the current Wi-Fi.
-  Test: flash a board, hold PWR 5 s, pick an icon, tap BOOT, check another board shows it and history shows it.
+  Also changeable on the device: triple-tap PWR opens a picker (PWR next, BOOT save). Buttons only: touch is not used
+  because the touch chip shares the audio chip's I2C bus, which audio power saving switches off.
+  Test: flash a board, triple-tap PWR, pick an icon, tap BOOT, check another board shows it and history shows it;
+  check a normal single PWR tap still plays/opens history (now ~0.45 s late on the home screen).
 - CPU at 80 MHz, 240 MHz only during server requests (`CPU_MHZ`, `CpuBoost` in `user_app.cpp`). USB meter, battery full,
   touch board idle: 53 mA (blips ~100 mA) vs 81 mA (blips 134 mA) at 240 MHz. About 7 h on the 400 mAh battery.
 - Remote firmware updates (OTA): signed images, separate admin password, staged rollout, automatic rollback,
