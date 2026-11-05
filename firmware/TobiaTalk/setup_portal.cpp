@@ -27,8 +27,17 @@ static String clean_name(String n)
   return out.length() ? out : String("Someone");
 }
 
-void setup_portal_run(const char *ap_name)
+// The quick-send pack, in the order shown on the page. The ids must match QUICK_ICONS in user_app.cpp.
+static const char *ICON_CHOICES[][2] = {
+    {"heart", "Heart"}, {"smile", "Smiley face"}, {"star", "Star"},
+    {"sun", "Sun (good morning)"}, {"moon", "Moon (good night)"}, {"tree", "Christmas tree"}};
+
+void setup_portal_run(const char *ap_name, bool wifi_ok)
 {
+  Settings cur;
+  bool configured = settings_load(cur);            // already set up once: prefill the page and allow keeping Wi-Fi
+  bool offer_keep = configured && wifi_ok;
+
   // A board that is still retrying an old (wrong) network cannot scan, so stop that first.
   WiFi.setAutoReconnect(false);
   WiFi.disconnect(true, false);                    // keeps the saved settings, just stops connecting
@@ -58,13 +67,22 @@ void setup_portal_run(const char *ap_name)
   WebServer web(80);
 
   auto page = [&]() {
+    String icons;
+    for (auto &c : ICON_CHOICES)
+      icons += String("<option value=") + c[0] + (cur.icon == c[0] ? " selected" : "") + ">" + c[1] + "</option>";
+    String keep = offer_keep ? "<label style='display:block;margin:6px 0 14px'><input type=checkbox name=keepwifi value=1 "
+                               "checked style='width:auto;margin:0 8px 0 0'>Keep my current Wi-Fi (" + html_escape(cur.ssid) +
+                               "). Untick to pick a different one.</label>"
+                             : String("");
     String h =
         "<!doctype html><meta name=viewport content='width=device-width,initial-scale=1'>"
         "<style>body{font-family:sans-serif;max-width:420px;margin:24px auto;padding:0 16px}"
         "input,select,button{width:100%;font-size:18px;padding:10px;margin:6px 0 14px;box-sizing:border-box}"
         "button{background:#222;color:#fff;border:0;border-radius:8px}</style>"
         "<h2>TobiaTalk setup</h2><form method=post action=/save>"
-        "<label>Your name (shown on the others' screens)</label><input name=name maxlength=15 required>"
+        "<label>Your name (shown on the others' screens)</label><input name=name maxlength=15 required value=\"" +
+        html_escape(configured ? cur.name : String("")) + "\">"
+        "<label>What a quick tap on BOOT sends</label><select name=icon>" + icons + "</select>" + keep +
         "<label>Wi-Fi network</label><select name=ssid>" + options + "</select>"
         "<p><a href=/rescan>List empty or missing yours? Rescan (may pause a few seconds)</a></p>"
         "<label>...or type it if it's not listed</label><input name=ssid_manual>"
@@ -83,6 +101,9 @@ void setup_portal_run(const char *ap_name)
     s.ssid = web.arg("ssid_manual").length() ? web.arg("ssid_manual") : web.arg("ssid");
     s.pass = web.arg("pass");
     s.name = clean_name(web.arg("name"));
+    s.icon = "heart";                              // anything not in the pack falls back to the heart
+    for (auto &c : ICON_CHOICES) if (web.arg("icon") == c[0]) s.icon = c[0];
+    if (offer_keep && web.arg("keepwifi") == "1") { s.ssid = cur.ssid; s.pass = cur.pass; }
     if (s.ssid.length() == 0) { web.send(400, "text/plain", "Pick a network"); return; }
     settings_save(s);
     web.send(200, "text/html",

@@ -14,6 +14,9 @@ server is offering no firmware update.
 - Battery indicator (on by default now, no setup checkbox) with plug/unplug tracking and charge offset correction;
   power latch for battery operation.
 - Adaptive polling: once a minute when quiet, every 10 s for 2 min after activity.
+- Icon pack (code written, compiled, server deployed, NOT yet tried on a board): heart, smiley, star, sun, moon, tree.
+  Chosen per board on the setup page, sent by a BOOT tap. Setup page prefills name/icon and can keep the current Wi-Fi.
+  Test: flash a board, hold PWR 5 s, pick an icon, tap BOOT, check another board shows it and history shows it.
 - CPU at 80 MHz, 240 MHz only during server requests (`CPU_MHZ`, `CpuBoost` in `user_app.cpp`). USB meter, battery full,
   touch board idle: 53 mA (blips ~100 mA) vs 81 mA (blips 134 mA) at 240 MHz. About 7 h on the 400 mAh battery.
 - Remote firmware updates (OTA): signed images, separate admin password, staged rollout, automatic rollback,

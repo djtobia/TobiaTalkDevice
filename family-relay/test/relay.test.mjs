@@ -81,6 +81,18 @@ assert.equal((await worker.fetch(new Request(`https://x/image?id=${dr.id}`), env
 const inLog = (await (await call("/messages?last=3")).json()).messages.at(-1);
 assert.deepEqual([inLog.id, inLog.type], [dr.id, "drawing"]);
 
+// ---- icon pack: quick-send pictures (heart is its own type; the rest are type=icon with a known icon name) ----
+for (const name of ["smile", "star", "sun", "moon", "tree"]) {
+  const ic = await (await call(`/send?from=Mom&type=icon&icon=${name}`, { method: "POST" })).json();
+  assert.deepEqual([ic.type, ic.icon, ic.seconds, ic.text], ["icon", name, undefined, undefined]);
+  assert.equal((await call(`/audio?id=${ic.id}`)).status, 404);          // pictures have no audio
+}
+assert.equal((await call("/send?from=Mom&type=icon&icon=skull", { method: "POST" })).status, 400);   // not in the pack
+assert.equal((await call("/send?from=Mom&type=icon", { method: "POST" })).status, 400);             // no icon given
+assert.equal((await call("/send?from=Mom&type=icon&icon=heart", { method: "POST" })).status, 400);  // heart is type=heart
+const lastIcon = (await (await call("/messages?last=1")).json()).messages[0];
+assert.deepEqual([lastIcon.type, lastIcon.icon], ["icon", "tree"]);
+
 // ---- firmware updates ----
 const admin = (path, init = {}, key = "adm") =>
   worker.fetch(new Request("https://x" + path, { ...init, headers: { "x-admin-key": key } }), env);

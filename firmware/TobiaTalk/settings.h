@@ -4,6 +4,7 @@
 
 struct Settings {
   String ssid, pass, name;
+  String icon = "heart";                    // what a tap on BOOT sends (see QUICK_ICONS in user_app.cpp)
 };
 
 bool settings_load(Settings &s);          // false if no Wi-Fi has been configured yet

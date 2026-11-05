@@ -4,4 +4,6 @@
 
 // Blocks until settings are saved (then restarts the board) or 10 minutes pass
 // (then restarts too, so a router outage can't strand the device in setup mode).
-void setup_portal_run(const char *ap_name);
+// wifi_ok: the board is online right now, so the page offers "keep my current Wi-Fi" (ticked) and changing
+// just the name or quick-send icon doesn't need the Wi-Fi password typed again.
+void setup_portal_run(const char *ap_name, bool wifi_ok = false);

@@ -77,8 +77,8 @@ epaper_driver_display *driver = NULL;
 board_power_bsp_t board_div(EPD_PWR_PIN, Audio_PWR_PIN, VBAT_PWR_PIN);
 
 static lv_ui src_ui;
-static lv_obj_t *heart_canvas = NULL;
-static lv_color_t heart_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(80, 70)];
+static lv_obj_t *quick_canvas = NULL;   // the quick-send picture (heart, smile, ...): one canvas, repainted per icon
+static lv_color_t quick_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(80, 70)];
 static lv_obj_t *envelope_canvas = NULL;
 static lv_color_t envelope_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(80, 56)];
 static lv_obj_t *mini_env_canvas = NULL;   // tiny envelope, bottom-right of the screensaver: unread message
@@ -88,7 +88,27 @@ static lv_color_t arrow_buf[LV_CANVAS_BUF_SIZE_TRUE_COLOR(28, 20)];
 static lv_obj_t *off_label = NULL;      // "OFF" tag, bottom-left: drawn just before a battery board powers down
 static lv_obj_t *foot_label = NULL;     // small line at the bottom of the screen
 static lv_obj_t *corner_label = NULL;   // small tag in the top-right corner (firmware version)
-enum Icon { ICON_NONE, ICON_HEART, ICON_ENVELOPE };
+// ICON_HEART onward is the quick-send icon pack, in the same order as QUICK_IDS and the setup page's list.
+enum Icon { ICON_NONE, ICON_ENVELOPE, ICON_HEART, ICON_SMILE, ICON_STAR, ICON_SUN, ICON_MOON, ICON_TREE };
+static const char *const QUICK_IDS[] = {"heart", "smile", "star", "sun", "moon", "tree"};
+static const char *const QUICK_CAPTIONS[] = {"sent a heart", "sent a smile", "sent a star", "Good morning", "Good night", "Merry Xmas"};
+static const int QUICK_COUNT = sizeof(QUICK_IDS) / sizeof(QUICK_IDS[0]);
+static const char *quick_id(Icon i) { return QUICK_IDS[(int)i - ICON_HEART]; }
+static const char *quick_caption(Icon i) { return QUICK_CAPTIONS[(int)i - ICON_HEART]; }
+static Icon quick_from_id(const char *id)   // unknown or missing names (a newer pack) show as the heart
+{
+  for (int k = 0; k < QUICK_COUNT; k++) if (strcmp(id, QUICK_IDS[k]) == 0) return (Icon)(ICON_HEART + k);
+  return ICON_HEART;
+}
+// What kind of message is this? ICON_NONE for voice and drawings.
+static Icon quick_from_msg(JsonObject m)
+{
+  const char *type = m["type"] | "voice";
+  if (strcmp(type, "heart") == 0) return ICON_HEART;
+  if (strcmp(type, "icon") == 0) return quick_from_id(m["icon"] | "heart");
+  return ICON_NONE;
+}
+static Icon g_my_icon = ICON_HEART;     // what a tap on BOOT sends (chosen on the setup page)
 static uint32_t last_activity = 0;      // when the send screen was last shown (for the screensaver)
 static int16_t *mono = NULL;            // 16 kHz mono PCM, lives in PSRAM
 static Settings g_set;                  // Wi-Fi + this person's name (from flash)
@@ -106,13 +126,13 @@ static bool g_batt_seen = false;        // a battery-only voltage has been measu
 static void battery_note_activity();    // defined with the other battery code below
 
 static int g_pending_id = 0;            // newest unseen message from someone else
-static bool g_pending_heart = false;
+static Icon g_pending_icon = ICON_NONE;   // the newest unseen message is a quick-send picture (not voice or a drawing)
 static bool g_pending_drawing = false;
 static char g_pending_from[24] = "";
 static uint32_t g_blink_until = 0;      // LED blinks until this time after a new message arrives
 static uint32_t g_active_until = 0;     // polling is fast (POLL_ACTIVE_MS) until this time
 
-struct Msg { int id; char from[24]; bool heart; bool drawing; int seconds; uint32_t age; };
+struct Msg { int id; char from[24]; Icon icon; bool drawing; int seconds; uint32_t age; };   // icon: ICON_NONE = voice/drawing
 // V_DRAW: drawing on a touch board. V_VIEW: looking at a received drawing full-screen.
 enum View { V_IDLE, V_HISTORY, V_SAVER, V_DRAW, V_VIEW };
 static View view = V_IDLE;
@@ -141,6 +161,68 @@ static Msg hist[5];                     // newest first
 static int hist_n = 0, hist_i = 0;
 static uint32_t hist_fetched = 0, view_deadline = 0;
 
+// ---- quick-send pictures, drawn pixel by pixel on the 80x70 canvas (black on white; x, y are from its middle) ----
+static bool in_poly(float x, float y, const float (*p)[2], int n)   // even-odd test: is (x, y) inside the polygon?
+{
+  bool in = false;
+  for (int i = 0, j = n - 1; i < n; j = i++)
+    if (((p[i][1] > y) != (p[j][1] > y)) && (x < (p[j][0] - p[i][0]) * (y - p[i][1]) / (p[j][1] - p[i][1]) + p[i][0])) in = !in;
+  return in;
+}
+
+static bool quick_pixel(Icon icon, int px, int py, const float (*star)[2])
+{
+  float x = px - 39.5f, y = py - 35.0f, d = sqrtf(x * x + y * y);
+  switch (icon) {
+    case ICON_HEART: {                   // (x^2+y^2-1)^3 - x^2*y^3 <= 0 is a heart
+      float hx = (px - 39.5f) / 28.0f, hy = (37.0f - py) / 28.0f, a = hx * hx + hy * hy - 1.0f;
+      return a * a * a - hx * hx * hy * hy * hy <= 0;
+    }
+    case ICON_SMILE:                     // outline, two eyes, a smile (the lower arc of a circle)
+      if (d >= 29.5f && d <= 33.0f) return true;
+      if (hypotf(x + 12, y + 10) <= 5.0f || hypotf(x - 12, y + 10) <= 5.0f) return true;
+      return hypotf(x, y + 4) >= 19.5f && hypotf(x, y + 4) <= 23.0f && y >= 8;
+    case ICON_STAR:
+      return in_poly(px, py, star, 10);
+    case ICON_SUN: {                     // a disc and eight rays
+      if (d <= 13.5f) return true;
+      if (d < 19.0f || d > 33.0f) return false;
+      const float step = 0.78539816f;    // 45 degrees
+      float delta = fmodf(atan2f(y, x) + 6.2831853f, step);
+      if (delta > step / 2) delta = step - delta;
+      return d * sinf(delta) <= 2.2f;
+    }
+    case ICON_MOON:                      // a big disc with a smaller one bitten out of it
+      return hypotf(x + 4, y) <= 32.0f && hypotf(x - 12, y + 6) > 27.0f;
+    case ICON_TREE: {                    // three stacked triangles and a trunk
+      static const float t1[3][2] = {{39.5f, 2}, {57, 28}, {22, 28}};
+      static const float t2[3][2] = {{39.5f, 16}, {64, 46}, {15, 46}};
+      static const float t3[3][2] = {{39.5f, 30}, {72, 60}, {7, 60}};
+      return in_poly(px, py, t1, 3) || in_poly(px, py, t2, 3) || in_poly(px, py, t3, 3) ||
+             (px >= 34 && px <= 45 && py >= 58 && py <= 68);
+    }
+    default:
+      return false;
+  }
+}
+
+static void paint_quick(Icon icon)       // call with the LVGL lock held
+{
+  static Icon painted = ICON_NONE;
+  if (painted == icon) return;
+  painted = icon;
+  float star[10][2];                     // five points: outer radius 35, inner 14
+  for (int k = 0; k < 10; k++) {
+    float a = -1.5707963f + k * 0.62831853f, r = (k & 1) ? 14.0f : 35.0f;
+    star[k][0] = 39.5f + r * cosf(a);
+    star[k][1] = 36.0f + r * sinf(a);
+  }
+  lv_canvas_fill_bg(quick_canvas, lv_color_white(), LV_OPA_COVER);
+  for (int py = 0; py < 70; py++)
+    for (int px = 0; px < 80; px++)
+      if (quick_pixel(icon, px, py, (const float (*)[2])star)) lv_canvas_set_px(quick_canvas, px, py, lv_color_black());
+}
+
 static void set_status(const char *top, const char *bottom, Icon icon = ICON_NONE, const char *foot = NULL,
                        const char *corner = NULL, bool mini_env = false, bool arrow = false)
 {
@@ -156,8 +238,12 @@ static void set_status(const char *top, const char *bottom, Icon icon = ICON_NON
     else lv_obj_add_flag(mini_env_canvas, LV_OBJ_FLAG_HIDDEN);
     lv_label_set_text(src_ui.screen_label_1, top);
     lv_label_set_text(src_ui.screen_label_2, bottom);
-    if (icon == ICON_HEART) lv_obj_clear_flag(heart_canvas, LV_OBJ_FLAG_HIDDEN);
-    else lv_obj_add_flag(heart_canvas, LV_OBJ_FLAG_HIDDEN);
+    if (icon >= ICON_HEART) {
+      paint_quick(icon);
+      lv_obj_clear_flag(quick_canvas, LV_OBJ_FLAG_HIDDEN);
+    } else {
+      lv_obj_add_flag(quick_canvas, LV_OBJ_FLAG_HIDDEN);
+    }
     if (icon == ICON_ENVELOPE) lv_obj_clear_flag(envelope_canvas, LV_OBJ_FLAG_HIDDEN);
     else lv_obj_add_flag(envelope_canvas, LV_OBJ_FLAG_HIDDEN);
     if (foot) {
@@ -190,8 +276,8 @@ static void show_idle()
   char buf[40];
   if (g_offline) {                       // stays up until Wi-Fi is back, whatever else was on screen
     set_status("No WiFi", "Hold PWR 5s", ICON_NONE, "to set up WiFi");
-  } else if (g_pending_id && g_pending_heart) {
-    set_status(g_pending_from, "sent a heart", ICON_HEART);
+  } else if (g_pending_id && g_pending_icon != ICON_NONE) {
+    set_status(g_pending_from, quick_caption(g_pending_icon), g_pending_icon);
   } else if (g_pending_id && g_pending_drawing) {
     snprintf(buf, sizeof(buf), "from %s", g_pending_from);
     set_status("New drawing", buf, ICON_ENVELOPE);
@@ -199,8 +285,8 @@ static void show_idle()
     snprintf(buf, sizeof(buf), "from %s", g_pending_from);
     set_status("New message", buf, ICON_ENVELOPE);
   } else {
-    set_status(g_set.name.c_str(), "Hold to talk", ICON_NONE,
-               g_has_touch ? "Tap = heart\nTouch to draw" : "Tap = heart", NULL, false, true);   // arrow -> BOOT button
+    snprintf(buf, sizeof(buf), (DRAWING_ENABLED && g_has_touch) ? "Tap = %s\nTouch to draw" : "Tap = %s", quick_id(g_my_icon));
+    set_status(g_set.name.c_str(), "Hold to talk", ICON_NONE, buf, NULL, false, true);   // arrow -> BOOT button
   }
 }
 
@@ -298,7 +384,7 @@ static void poll_messages()
     const char *from = m["from"] | "Someone";
     if (!g_first_poll && g_set.name != from) {   // skip history and our own messages
       g_pending_id = id;
-      g_pending_heart = strcmp(m["type"] | "voice", "heart") == 0;
+      g_pending_icon = quick_from_msg(m);
       g_pending_drawing = strcmp(m["type"] | "voice", "drawing") == 0;
       strlcpy(g_pending_from, from, sizeof(g_pending_from));
       changed = true;
@@ -330,7 +416,7 @@ static int fetch_history()
     JsonObject m = arr[i];
     hist[n].id = m["id"];
     strlcpy(hist[n].from, m["from"] | "Someone", sizeof(hist[n].from));
-    hist[n].heart = strcmp(m["type"] | "voice", "heart") == 0;
+    hist[n].icon = quick_from_msg(m);
     hist[n].drawing = strcmp(m["type"] | "voice", "drawing") == 0;
     hist[n].seconds = m["seconds"] | 0;
     hist[n].age = m["age"] | 0;
@@ -346,8 +432,8 @@ static void show_history()
   char age[16], bottom[32];
   format_age(age, sizeof(age), m.age + (millis() - hist_fetched) / 1000);
   snprintf(bottom, sizeof(bottom), "%s %d/%d", age, hist_i + 1, hist_n);
-  set_status(m.from, bottom, m.heart ? ICON_HEART : ICON_NONE,
-             m.heart ? NULL : m.drawing ? "Hold PWR for 3 seconds\nto view" : "Hold PWR for 3 seconds\nto play");
+  set_status(m.from, bottom, m.icon,
+             m.icon != ICON_NONE ? NULL : m.drawing ? "Hold PWR for 3 seconds\nto view" : "Hold PWR for 3 seconds\nto play");
   view_deadline = millis() + 10000;
 }
 
@@ -588,7 +674,8 @@ static int record_message()
   return (int)n;
 }
 
-static bool send_message(size_t samples, bool heart)
+// A voice message (samples of audio), or with `icon` set a quick-send picture (no audio).
+static bool send_message(size_t samples, Icon icon = ICON_NONE)
 {
   CpuBoost boost;
   if (!online()) return false;
@@ -596,10 +683,11 @@ static bool send_message(size_t samples, bool heart)
   HTTPClient http;
   String path = "/send?from=" + g_set.name;
   path.replace(" ", "%20");
-  if (heart) path += "&type=heart";
+  if (icon == ICON_HEART) path += "&type=heart";          // the heart keeps its own type: boards from before the pack know it
+  else if (icon != ICON_NONE) path += String("&type=icon&icon=") + quick_id(icon);
   if (!begin_request(http, tls, path)) return false;
   http.addHeader("content-type", "application/octet-stream");
-  int code = heart ? http.POST("") : http.POST((uint8_t *)mono, samples * 2);
+  int code = icon != ICON_NONE ? http.POST("") : http.POST((uint8_t *)mono, samples * 2);
   http.end();
   g_active_until = millis() + ACTIVE_WINDOW_MS;   // the other side may answer soon: check often for a while
   battery_note_activity();
@@ -679,7 +767,7 @@ static bool run_ota(String &err)
 static void enter_setup()
 {
   set_status("Join WiFi", "TobiaTalk");
-  setup_portal_run("TobiaTalk");         // restarts the board when done
+  setup_portal_run("TobiaTalk", online());   // restarts the board when done; online: offer "keep my current Wi-Fi"
 }
 
 static void on_boot_tap()
@@ -688,9 +776,9 @@ static void on_boot_tap()
     show_idle();
     return;
   }
-  set_status("Sending", "heart", ICON_HEART);
-  bool ok = send_message(0, true);
-  set_status(ok ? "Sent" : "Failed", ok ? "heart" : online() ? "Try again" : "No WiFi", ok ? ICON_HEART : ICON_NONE);
+  set_status("Sending", quick_id(g_my_icon), g_my_icon);
+  bool ok = send_message(0, g_my_icon);
+  set_status(ok ? "Sent" : "Failed", ok ? quick_id(g_my_icon) : online() ? "Try again" : "No WiFi", ok ? g_my_icon : ICON_NONE);
   vTaskDelay(pdMS_TO_TICKS(2500));
   show_idle();
 }
@@ -716,19 +804,20 @@ static void on_pwr_short()
     show_history();
     return;
   }
-  if (g_pending_id) {                    // new message waiting: play it / show it / acknowledge the heart
+  if (g_pending_id) {                    // new message waiting: play it / show it / acknowledge the picture
     int id = g_pending_id;
-    bool heart = g_pending_heart;
+    bool picture = g_pending_icon != ICON_NONE;
     bool drawing = g_pending_drawing;
     char from[24];
     strlcpy(from, g_pending_from, sizeof(from));
     g_pending_id = 0;
+    g_pending_icon = ICON_NONE;
     g_pending_drawing = false;
     if (drawing) {
       if (!show_drawing_by_id(id, from, V_IDLE)) show_idle();
       return;                            // on success the drawing is on screen; a button press brings the home screen back
     }
-    if (!heart) play_message(id, from);
+    if (!picture) play_message(id, from);
     show_idle();
   } else if (view == V_HISTORY) {
     hist_i = (hist_i + 1) % hist_n;
@@ -952,7 +1041,9 @@ static void handle_combo()
 
 static void app_task(void *arg)
 {
-  if (!settings_load(g_set)) {           // never configured: go straight to setup
+  bool configured = settings_load(g_set);
+  g_my_icon = quick_from_id(g_set.icon.c_str());
+  if (!configured) {                     // never configured: go straight to setup
     enter_setup();
   }
   set_status("Connecting", "WiFi...");
@@ -1025,7 +1116,7 @@ static void app_task(void *arg)
         on_boot_tap();
       } else {
         set_status("Sending", "...");
-        bool ok = send_message(n, false);
+        bool ok = send_message(n);
         set_status(ok ? "Sent" : "Failed", ok ? g_set.name.c_str() : online() ? "Try again" : "No WiFi");
         vTaskDelay(pdMS_TO_TICKS(2500));
         show_idle();
@@ -1041,7 +1132,7 @@ static void app_task(void *arg)
       if (m.drawing) {
         if (!show_drawing_by_id(m.id, m.from, V_HISTORY)) show_history();   // on success a button press returns to history
       } else {
-        if (!m.heart) play_message(m.id, m.from);
+        if (m.icon == ICON_NONE) play_message(m.id, m.from);
         show_history();
       }
       last_poll = millis();
@@ -1259,19 +1350,12 @@ void user_ui_init(void)
   lv_label_set_text(src_ui.screen_label_1, "Starting");
   lv_label_set_text(src_ui.screen_label_2, "");
 
-  // Heart drawn pixel by pixel: (x^2+y^2-1)^3 - x^2*y^3 <= 0 is a heart.
-  heart_canvas = lv_canvas_create(src_ui.screen);
-  lv_canvas_set_buffer(heart_canvas, heart_buf, 80, 70, LV_IMG_CF_TRUE_COLOR);
-  lv_canvas_fill_bg(heart_canvas, lv_color_white(), LV_OPA_COVER);
-  for (int py = 0; py < 70; py++) {
-    for (int px = 0; px < 80; px++) {
-      float x = (px - 39.5f) / 28.0f, y = (37.0f - py) / 28.0f;
-      float a = x * x + y * y - 1.0f;
-      if (a * a * a - x * x * y * y * y <= 0) lv_canvas_set_px(heart_canvas, px, py, lv_color_black());
-    }
-  }
-  lv_obj_set_pos(heart_canvas, 60, 2);
-  lv_obj_add_flag(heart_canvas, LV_OBJ_FLAG_HIDDEN);
+  // The quick-send picture (heart, smile, ...). Painted by paint_quick() each time one is shown.
+  quick_canvas = lv_canvas_create(src_ui.screen);
+  lv_canvas_set_buffer(quick_canvas, quick_buf, 80, 70, LV_IMG_CF_TRUE_COLOR);
+  lv_canvas_fill_bg(quick_canvas, lv_color_white(), LV_OPA_COVER);
+  lv_obj_set_pos(quick_canvas, 60, 2);
+  lv_obj_add_flag(quick_canvas, LV_OBJ_FLAG_HIDDEN);
 
   // Envelope (new-message icon): 3 px border, flap lines meeting in the middle.
   envelope_canvas = lv_canvas_create(src_ui.screen);

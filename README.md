@@ -1,7 +1,7 @@
 # TobiaTalkDevice
 
-A family "walkie-talkie" gift: small e-paper boxes that send voice messages, hearts and (on touch versions)
-little drawings to each other over the internet. Hold a button and talk; every other box
+A family "walkie-talkie" gift: small e-paper boxes that send voice messages and quick pictures (a heart, smiley,
+star, ...) to each other over the internet. Hold a button and talk; every other box
 shows "New message from Mom" and plays it when you press a button.
 
 Built on the **Waveshare ESP32-S3-ePaper-1.54** (200x200 black/white e-paper,
@@ -33,10 +33,10 @@ Two buttons, **BOOT** and **PWR**. What they do depends on the screen:
 | Where | Press | Does |
 |---|---|---|
 | Send screen | Hold **BOOT** | Records (LED on), at least 5 s, at most 15 s; release to send |
-| Send screen | Tap **BOOT** (under 0.4 s) | Sends a heart |
-| Send screen (touch boards) | **Touch the screen** | Starts a drawing (see below) |
+| Send screen | Tap **BOOT** (under 0.4 s) | Sends this person's quick-send icon (heart, smiley, star, sun, moon or tree: chosen in setup) |
+| Send screen (touch boards) | **Touch the screen** | Starts a drawing, only if `DRAWING_ENABLED` is 1 (off by default) |
 | Send screen | Tap **PWR** | Opens history (last 5 messages from *other* boards, newest first) |
-| New message waiting | Tap **PWR** | Plays it / shows the drawing (a heart is just acknowledged) |
+| New message waiting | Tap **PWR** | Plays it / shows the drawing (an icon is just acknowledged) |
 | History | Tap **PWR** | Next older message (wraps around) |
 | History | Tap **BOOT** | Previous (newer) message (wraps around) |
 | History | Hold **PWR** 3 s | Replays the shown voice message, or shows the drawing (the screen says which) |
@@ -51,7 +51,13 @@ Screens and indicators:
 - **Send screen** (name, "Hold to talk") is home. After 15 s idle a heart screensaver ("Tobia Talk Device",
   name, firmware version top-right) appears. E-paper keeps the image with no power, so it is also what an
   unplugged board shows.
-- **New message:** the send screen shows an envelope (or a heart) with the sender, the LED blinks for 5 s, and on
+- **Icon pack:** each board picks what its BOOT tap sends on the setup page (hold PWR 5 s): heart, smiley face ("sent a
+  smile"), star, sun ("Good morning"), moon ("Good night") or Christmas tree ("Merry Xmas"). The send screen shows the
+  chosen name ("Tap = smile"); receivers see the picture with the sender's name. The setup page remembers the name and
+  icon, and offers "Keep my current Wi-Fi" (ticked when the board is online) so changing the icon needs no password. Icons
+  are drawn from shapes in `quick_pixel()` in `user_app.cpp`; to add one, add it there, to `QUICK_IDS`/`QUICK_CAPTIONS`, to
+  the setup page list in `setup_portal.cpp`, and to `ICONS` in `worker.js`. A board that gets an icon name it doesn't know shows a heart.
+- **New message:** the send screen shows an envelope (or the sender's icon) with the sender, the LED blinks for 5 s, and on
   the screensaver a small envelope appears bottom-right until it is read. Your own messages are never announced to you.
   A message appears within about a minute on a quiet board, and within ~10 s during a conversation (a board checks every 10 s
   for 2 minutes after it sends, receives or plays a message, otherwise once a minute).
@@ -186,6 +192,7 @@ Do not host firmware binaries anywhere public: `secrets.h` (the family password)
 |---|---|
 | `POST /send?from=Name` body = raw PCM | Voice message. 16 kHz, 16-bit little-endian, mono. 5-20 s (else 400/413). |
 | `POST /send?from=Name&type=heart` | Heart, no body. |
+| `POST /send?from=Name&type=icon&icon=smile` | Another quick-send picture, no body: `smile`, `star`, `sun`, `moon`, `tree` (else 400). Stored as `{type:"icon", icon:"smile"}`. |
 | `POST /send?from=Name&type=text` body = UTF-8 text | Text (max 200 chars). **Firmware does not display this yet.** |
 | `POST /send?from=Name&type=drawing` body = 5000 raw bytes | Drawing: 200x200, 1 bit per pixel, row-major, MSB first, 1 = black. Any other size is refused (400). |
 | `GET /messages?since=<id>&v=<fwversion>&me=<Name>` | Messages newer than id (what boards poll). If a newer firmware is on offer for that board the reply also has `fw: {version, size}`. |

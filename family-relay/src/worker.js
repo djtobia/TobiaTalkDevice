@@ -1,5 +1,5 @@
 // Family voice relay. Boards POST recorded audio (raw 16 kHz, 16-bit, mono PCM)
-// or a "heart" (no audio). Every board polls GET /messages?since=<id> for new
+// or a quick-send picture, a "heart" or an "icon" (smile, star, ...; no audio). Every board polls GET /messages?since=<id> for new
 // ones, GET /messages?last=N for history, and fetches audio with GET /audio?id=.
 // The same poll tells a board when a newer signed firmware is available.
 // Transcription is intentionally not here yet.
@@ -9,6 +9,7 @@ const MIN_SECONDS = 5;
 const MAX_SECONDS = 20;
 const MAX_KEPT = 50;
 const DRAWING_BYTES = 200 * 200 / 8;   // a 200x200 drawing, 1 bit per pixel, row-major, MSB first, 1 = black
+const ICONS = ["smile", "star", "sun", "moon", "tree"];   // the icon pack (besides "heart", which is its own message type)
 const AUDIO_TTL = 7 * 24 * 3600; // audio expires after a week
 const MAX_FIRMWARE_BYTES = 2 * 1024 * 1024; // app slot is 1.9 MB + 512 B signature
 const MIN_FIRMWARE_BYTES = 100 * 1024;
@@ -129,9 +130,11 @@ export default {
     if (req.method === "POST" && url.pathname === "/send") {
       const from = (url.searchParams.get("from") || "Someone").replace(/[^\w .'-]/g, "").slice(0, 20) || "Someone";
       const wanted = url.searchParams.get("type");
-      const type = ["heart", "text", "drawing"].includes(wanted) ? wanted : "voice";
-      const heart = type === "heart";
+      const type = ["heart", "icon", "text", "drawing"].includes(wanted) ? wanted : "voice";
       const voice = type === "voice";
+      // A quick-send picture from the icon pack. "heart" stays its own type so boards from before the pack still understand it.
+      const icon = url.searchParams.get("icon");
+      if (type === "icon" && !ICONS.includes(icon)) return json({ error: `icon must be one of ${ICONS.join(", ")}` }, 400);
       const pcm = await req.arrayBuffer();
       if (type === "drawing" && pcm.byteLength !== DRAWING_BYTES) {
         return json({ error: `drawing must be exactly ${DRAWING_BYTES} bytes (200x200, 1 bit per pixel)` }, 400);
@@ -151,6 +154,7 @@ export default {
       await env.MSGS.put("seq", String(id));
       const msg = { id, from, type, time: new Date().toISOString() };
       if (type === "text") msg.text = text;
+      if (type === "icon") msg.icon = icon;
       if (voice) {
         msg.seconds = Math.round(pcm.byteLength / BYTES_PER_SEC);
         await env.MSGS.put(`audio:${id}`, pcm, { expirationTtl: AUDIO_TTL });

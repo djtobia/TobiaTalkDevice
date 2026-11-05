@@ -8,6 +8,7 @@ bool settings_load(Settings &s)
   s.ssid = p.getString("ssid", "");
   s.pass = p.getString("pass", "");
   s.name = p.getString("name", "");
+  s.icon = p.getString("icon", "heart");
   p.end();
   if (s.name.length() == 0) s.name = "Someone";
   return s.ssid.length() > 0;
@@ -20,5 +21,6 @@ void settings_save(const Settings &s)
   p.putString("ssid", s.ssid);
   p.putString("pass", s.pass);
   p.putString("name", s.name);
+  p.putString("icon", s.icon);
   p.end();
 }
