@@ -1,0 +1,73 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>Tobia Talk quick start</title>
+<style>
+@page { size: Letter; margin: 0.4in 0.5in; }
+* { box-sizing: border-box; }
+body { font-family: "Segoe UI", Arial, sans-serif; color: #000; font-size: 12.5pt; line-height: 1.3; margin: 0; }
+h1 { font-size: 28pt; margin: 0; letter-spacing: -0.3px; }
+.sub { font-size: 12.5pt; margin: 2px 0 10px; }
+h2 { font-size: 14.5pt; margin: 0 0 5px; padding-bottom: 2px; border-bottom: 2px solid #000; }
+.step { display: flex; gap: 10px; margin: 0 0 7px; }
+.n { flex: none; width: 26px; height: 26px; border-radius: 50%; background: #000; color: #fff; font-weight: 700; text-align: center; line-height: 26px; font-size: 12.5pt; }
+.step p { margin: 0; }
+.big { font-weight: 700; }
+.box { border: 2px solid #000; border-radius: 8px; padding: 8px 12px; margin: 0 0 10px; }
+table { border-collapse: collapse; width: 100%; }
+td { padding: 4px 6px; border-bottom: 1px solid #999; vertical-align: top; }
+td:first-child { width: 36%; font-weight: 700; }
+tr:last-child td { border-bottom: 0; }
+.icons { display: flex; justify-content: space-between; margin: 6px 0 0; text-align: center; font-size: 11pt; }
+.icons img { width: 52px; height: 45px; display: block; margin: 0 auto 1px; image-rendering: pixelated; }
+.cols { display: flex; gap: 16px; }
+.cols > div { flex: 1; }
+.small { font-size: 11.5pt; }
+code { font-family: Consolas, monospace; font-weight: 700; }
+.note { margin-top: 8px; font-size: 11.5pt; border-top: 2px solid #000; padding-top: 5px; }
+</style></head><body>
+
+<h1>Your Tobia Talk box</h1>
+<div class="sub">Talk to the family with one button. It works anywhere with Wi-Fi. Nothing to install on your phone.</div>
+
+<div class="box">
+<h2>Set it up (once, about 3 minutes)</h2>
+<div class="step"><div class="n">1</div><p><span class="big">Plug it in</span> with the USB-C cable and any phone charger. The screen says <span class="big">Join WiFi: TobiaTalk</span>.</p></div>
+<div class="step"><div class="n">2</div><p><span class="big">On your phone</span>, open Wi-Fi settings and join the network called <span class="big">TobiaTalk</span> (no password). A setup page opens by itself. If it doesn't, open your web browser and go to <code>192.168.4.1</code>.</p></div>
+<div class="step"><div class="n">3</div><p><span class="big">Fill it in:</span> your name, the picture you want to send, your home Wi-Fi and its password. Then press <span class="big">Save</span>. The box restarts and joins your Wi-Fi.</p></div>
+<div class="step" style="margin-bottom:0"><div class="n">4</div><p><span class="big">Done!</span> The screen shows your name and "Hold to talk".<br>
+<span class="small">Your home Wi-Fi must be the normal 2.4 GHz kind (most are). Wi-Fi that asks you to sign in on a web page (hotels, schools) won't work.</span></p></div>
+</div>
+
+<div class="cols">
+<div>
+<h2>Using it</h2>
+<p class="small" style="margin:0 0 4px">The box has two buttons: <b>BOOT</b> (the one the arrow on the screen points to) and <b>PWR</b>.</p>
+<table>
+<tr><td>Hold BOOT and talk</td><td>Let go to send. Between 5 and 15 seconds.</td></tr>
+<tr><td>Tap BOOT</td><td>Sends your picture (see below).</td></tr>
+<tr><td>New message</td><td>The light blinks and the screen shows who it is from. Tap <b>PWR</b> to hear it.</td></tr>
+<tr><td>Tap PWR (nothing new)</td><td>Shows the last 10 messages. PWR goes older, BOOT goes newer, hold PWR for 3 seconds to hear one again. Both buttons together to leave.</td></tr>
+<tr><td>Screen went to the heart?</td><td>That is the screensaver. Tap any button to wake it.</td></tr>
+</table>
+<p class="small" style="margin:6px 0 0">New messages can take up to a minute to arrive.</p>
+</div>
+
+<div>
+<h2>Change your picture</h2>
+<p class="small" style="margin:0 0 4px"><b>Tap PWR three times fast.</b> The six pictures appear. Press <b>PWR</b> to move the frame, <b>BOOT</b> to keep the one you like.</p>
+<div class="icons">
+<div><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAADSCAAAAABRWhJzAAACdElEQVR4nO3d0WrbQBQA0blD//+X1YdAKW3jKpa0Ch6fx8RZXeFBELB3Z6NFYiRGYiRGYiRGYiTmx8G/n4e/3b7Nmt13WGLmiur+tt205t9y77DEzFfD+Gp4v9sWrvkZiZGY+VISR9r7sC1Z8wGJkZjZ38Px9n7ZrllwD4mRmB87X3difleY3VVLjMTMFf+43WXPvUiMxMz2Kj1/+O/tSIzESIzESMxsL/SI/vD4jiRGYiRGYiRmttd6RH94cFMSIzESIzESIzESIzESIzESM1d8lOg7+Oy+JEZiJEZiJEZiJEZiJEZiJEZiJEZiJEZiJEZiJEZiJEZiJEZiJEZi5v2xpRcnMRIjMRIjMRIjMRIjMRIz7y9qvTiJkRiJkRiJkRiJmfc+Hi9OYiRGYiRm3huIvTiJkRiJkZjZueHn9/8q4nvn0n+TGImRGImZW7ZMP917y/RPSYzESIzEzOKzWq7wPqvlEYmZlSdqXeF9otZ/SIzESIzEzBMHYn6fB/UTw0uMxMya02mv8D6ddheJmaeP5L636qfHlhiJmSOnzN9V9ZGZJUZi5kget1R9cGCJkZg5WMjiqo9PKzESM8cjWVb1KaNKjMTMKZ0sqPqsOSVGYuasVC6t+sQhJUZi5sRaLqr63AklRmLm3GBOr/r08SRGYma7aN3DK1w0mMRIzFxUzsGqr5tKYiRmrovn6aovHUliJGa2BdfY/coFw0iMxMyCinZWvWYSiZGY2VZe7JOfr5xBYiRmVub0z6oXDyAxEjOLi/qj6vVXlxiJmfVR/ar6lktLjMTMLV3dSGIkRmIkRmIkRmIkRmIkRmIkRmK8e4DVfgLmiVRckKV1+gAAAABJRU5ErkJggg==">Heart</div>
+<div><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAADSCAAAAABRWhJzAAADGUlEQVR4nO3d0Y6jMAxG4eNfvP8rZy93tDPtQHBou4fvGhxLWFEIIamBS5AJMkEmyASZIBNkgsy2uoE6eP3qgVCQCTI13qOSv1uUWJAJMjXerJK/680wyASZGlcV81h5+35BJshUS6k8KsjxBtHsTzjI1Mk6+bH8lvb8J4MHmSBTo7XkVrzT9bYSZIJMdY0NVk++dbUYZIJMjU+o58Z2g0yQqfEh9dzVepAJMjVOVNSrljydSSPIBJlt+s4XLuEbJ77pBJkgU/sr82sVvcOS1Ll8gkyQqfGZ9TydVZAJMturVm60q31VHWSCzHb0hvfpoucG1UEmyNT4zCHHdIZBJsgEmSATZGr/ms9D/fnOW7ri7M8zyASZrStQnXhlWxHnkSATZGp0dH3P39Hmpr6PxtmZbZAJMkEmyASZbc9F7znRMTehF2SCzPbRn1ceeTL2DjJBJsgEmSBT47deemIRyFctMx4Tady9tLWkt6VD2fG6OI8EmSBT4zM/gj/ya+ZBJsgEmSATZIJMkAkyQSbIBJkgE2SCTJAJMkEmyASZIBNkgkyQCTJBJsgEmSATZIJMkAkyW/sOXW/iXrZkLekgE2SCzHZmOf1lG5nubOj+q+UHd0kf8ZLxyX1WyzFBpvb8Id6418eEiR/V7z/E/7pLumPTg0Unat2bHswIMtuKoC07ySwa0gSZIFPrNhBrPH7u3kBsXpDZGmP987Z49Ifc1QeDSp9wkKn2zXifDBgmJt+Otnhvxou9pLf2iOPpbo1H47QLMkGm2rvBRzfuN93EfbDFD3QlvS2dzXjSYz+5/lAyRwWZILNd8JXwmp1A7hO1fhZk6j738D8XZGrpwHWd6UyCTJDZpu9sPGxioulpQSbI1Pk3sisL+3zrQSbI1ERBvqqqW9oNMkGmLjvH7aSuFoNMkKnGxUUXrJc+30qQCTJ1sgiXLjRaETzIBJlqKb+uUy1WRLM/4SBTS3tUmg4Dbez5g0yQqd7R74pfUe710qcEmVo0U3G+tu/FpT2CTF0/+fbc6nyCTJCpzzow67wgE2SCTJDJqxO42h9LR5Z9lZiFtgAAAABJRU5ErkJggg==">Smile</div>
+<div><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAADSCAAAAABRWhJzAAACfUlEQVR4nO3dwY6jOhQG4XKJ939lRprsRvdGSTCG7sq36CU+ln45p8GYsdMiMRIjMRIjMRIjMRKzXTLq+Pv3kp5HYiRGYiRGYiRGYiRm7Bd1HQ/rR5cYiZEYiZEYiZEYiRn7dV3Hw+ICJEZiJEZiJEZiJEZixn5p1/GwsgaJkRiJkRiJGfvVS/TDsjIkRmIkRmIkRmIkRmLGfoOu42FNJRIjMRIjMRIjMRIjMWO/R9fxsKAYiZEYiZEYiZEYiZGYsd+m63g4ux6JkRiJkRiJGfvJq+7Z3q1fYiRm7D8kuu/6v3lJjMSMJ6vcz031k0lJjMSM5z/cPzHVz2ckMRIzXulFf0qwX5mLxEjMePHfq/un+sWJSIzEjNfvGNw51a/PQmIkZnxv4v1yEjM+eFp3n+X6g+IlRmLGZw+g75DqzyqXGIkZR/ZUXBXsIzVLjMSMg9uE1qf6YMESIzHj+M63lak+Xq3ESMyYtZnz7GDPqlNiJGZM3J98XqonFikxEjPmbrk/I9VzK5QYiZEYiZEYiZEYiZEYiZEYiZEYiRnfOx6/nMRIjMRIjMRIjMSM79PDX05iJEZiJEZiJEZixn7dwXeXHJcnMRKzLR5vPxzsgyRGYraVg/3nMruvTbXESMy2ZpjnPcPK5VpiJGYseKtl4lEh37da3iYx26lXfzeBC5ZriZGY7bxLf7yintpdS4zEjJPeED+vn/m+If4eidmmX3HWE/aTmhCJkZht7uWmfzxoehMiMRIzZp22tPLLXN/Tlt4gMduUqyz4quys5VpiJGa7f5j/GetgsCVGYsbKTN6BxEiMxEiMxEiMxEiMxEiMxEiMxEiMxEiMVxew2h/ubFRyzfFWHwAAAABJRU5ErkJggg==">Star</div>
+<div><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAADSCAAAAABRWhJzAAACaUlEQVR4nO3d3WrcMBRF4aWF3v+V3YtAKW0pGf/Xy99VCLF0YDbGseZIY6FFYiRGYiRGYiRGYiRmnj/l+OXn8x97JEZiJEZiJEZiJEZiJEZiJEZiJEZiJEZiJEZiJEZiJEZiJGaufrF87Ur66hokRmLm6oWScV2qt9QgMRIzVy/8XZXqjTVIjMTMj/56uTrVv82+4tlDYiRmfnrBhanenmeCn7DEzBXXXJLqXfJM8BOWmLFcnbGT55IYiRlbcnhOqvedRWIkZmwM4dGp3n18iZGYsT2Bx6X6iJElRmLGcu9Gld1HlhiJGfveUZcP77p8+6q96pQYiRlXvVL+0zmVSIzEjPPfJ//b0fVIjMSM5U55/nJoSRIjMePM9ZHvO64qiZGYsdwvz18OKkxiJGacs963zhG1SYzESIzESMxY7nqL/rJ7eRIjMRIjMRIjMRIjMXPjw8PlvYef1iYxEiMxEiMx887/Gx7RAiYxEjP3He7PtsTtA+5LYiRGYiRGYuZff3vnY7beRq3PSIzESIzESIzESMx4v7b0cBIjMRIjMeP9vvTDScx4u1oeTmLG23v4cBIz3g7xh5OY8e7j8XASM97dlh5OYsa7J97DScx4dy59OIkZ7/7SDycx4z0F4OEkZrxntTycxIzl9P351+2C/p6otZLEzJufpbX7yXQSIzHzv8jzjqmWGImZ/0uef073niH+GYmZWxJ1SYvixhokRmLm6kRd2HK7pQaJkZi54po79I+/By5/l8RIjMRIjMRIjMRIjMRIjMRIjMRIjMRIjMRIjMRIjMRIzLjDS+YzSYzESIzEeHUBZ/sBF3Jxi2yNWE0AAAAASUVORK5CYII=">Good<br>morning</div>
+<div><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAADSCAAAAABRWhJzAAACX0lEQVR4nOXaS24bMRAA0WKh739lZZGdgTiSNR9a9dYGZaDLNGeo9aBFYiRGYiRGYiRGYiRGYiRGYuaMRdfTP3n9SV5iJGZuKfmWmKMTlpi5uOQbY45OWGKmsDOnJywxE9mcuxOWmLkg5n16JjhhiZlUzwQnLDGT6pnghCVmUj0TnLDETKpnghOWmDmp521JjMTMST3vuUUTnLDETKpnghOWGImRGImZ1BZNcMISM4VHwvSEJUZiJEZi5tgtevNTB8EJS4zESIzETOcUHZ2wxMyBa+1/6iA4YYmRGImR+C69+HASIzESIzESIzESIzESIzFSPksvPp/ESIzESIzESIzESIzESIzESIzESMwcuNb6DXfiEiMxEiMxEiMxEiMxc+xy+589JEZiJEZiJEZiJEZi1pdzwiF34jufPSRGYiRGYiRmzlh054dEiZGYOWndbauWGIkn/fj0r5hKjMTMeUvvuVFLjMTMqatvWLXESPwl3l/Hnj22qlpiJGYu+Iyt9mqJkZj1r9gOf0jcpGqJkZi57JM22aslRmLWN5md9Dbv3rAlRmLW94Gd9476rrAlRmLmrg9eN4UtMRKz/hvVNZeJj6v+FiRGYtYzbex2Rf7O3i4xErOezGOfqt88q0iMxKxX/+Pf6/2zt8RIzHopknurPuRZUmIkZr3ayV1VH/VuRGIkZv0gleurPvBdn8RIzPpxLbu93HuSxEjMerOZX3e9KDESs94v54yqz7tVlBiJWQfG837bF9yPS4zErDMqerXtK7/pITESs3b4DvOVJEZiJEZiJEZiJMa7f4Gr/QFieT+//sERIwAAAABJRU5ErkJggg==">Good<br>night</div>
+<div><img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAPAAAADSCAAAAABRWhJzAAACRElEQVR4nO3Zy4rkShAEUQvj/v8v58Dkfm4/qlSSTGfRqwZ5gBMUGbNokRiJkRiJkRiJkRiJ+e8jX52/fz/ym0diJEZiJEZiZn1oRW/Hf11iJGbW5/q8HRxAYiRGYiRGYmZ9dEVvR2aQGImZ9ek+b4fFkBiJkRiJkZhZJ1jR2zFJJEZiZp2jz9sBYSRGYiRGYiRm1mlW9PbuPBIjMbPO1OftrZEkRmIkRmIkZtbJVvT2vlQSIzGzztfn7U3BJEZiJEZiJGbWKVf09o5sEiMxs87a5+3l8SRGYiRGYiRm1olX9PbahBIjMbPO3efthSElRmIkRmIkZtbpV/T2qpwSIzGzrtDn7SVRJUZi5jmI35zEzHMQvzmJkRiJkZh5DuI3JzHzHMRvTmLmuR7enMTMcz28OYmZ59RycxIjMRIjMfNcD29OYmZd5Bq+/T6txEjMrOv0eftlYImRmFmX6vP2m8wSIzESIzESM+tqK3r7cWyJkZhZF+zz9rPkEiMxs67Z5+0H4SVGYmZdts/bd/NLjMTMc2q5OYmZ59RycxIzl3uXfk4t3yMx8zzi3ZzEzPOId3MSM88j3s1JzDyPeDcnMbOu/Ci9fWsEiZGYWRfv8/b1KSRGYmZdv8/bFweRGImZdYs+b1+ZRWIkZtZd+rz97zgSIzGzbtTn7d8TSYzEzLpXn7d/DCUxEjPrmM984X+OSSIxEiMxEiMxEiMxEiMxEiMxEiMxEiMxEiMxEiMxEiMxEiMxEiMxEjPHHDjOQ2L8dICj/QGBTGBHfkpkGwAAAABJRU5ErkJggg==">Merry<br>Xmas</div>
+</div>
+
+<h2 style="margin-top:12px">New Wi-Fi, or it says "No WiFi"</h2>
+<p class="small" style="margin:0"><b>Hold PWR for 5 seconds</b> until the screen says Join WiFi, then do steps 2 and 3 again. If your Wi-Fi changed, un-tick "Keep my current Wi-Fi" and pick the new one.</p>
+</div>
+</div>
+
+<div class="note"><b>Tip:</b> keep it plugged in. The battery is only for carrying it around and lasts a few hours. To switch it off on battery, hold both buttons for 10 seconds.</div>
+
+</body></html>

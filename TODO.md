@@ -9,7 +9,7 @@ firmware update. Drawing is switched off (`DRAWING_ENABLED 0`).
 - Voice messages, hearts, **drawings** (touch boards draw; every board receives and views them), envelope/heart icons,
   LED blink (5 s) on a new message.
 - Screensaver (15 s) with version tag, unread envelope and OFF tag; PWR+BOOT shortcuts; 10 s power-off.
-- History of the last 5 messages from other boards, paged with PWR (down) / BOOT (up), 3 s PWR hold to replay/view.
+- History of the last 10 messages from other boards (`HIST_MAX`), paged with PWR (down) / BOOT (up), 3 s PWR hold to replay/view.
 - Wi-Fi/name setup portal (hold PWR 5 s) incl. network scan after a failed connect + Rescan link.
 - Persistent "No WiFi" home screen.
 - Battery indicator (on by default now, no setup checkbox) with plug/unplug tracking and charge offset correction;
@@ -39,8 +39,10 @@ firmware update. Drawing is switched off (`DRAWING_ENABLED 0`).
   hours on battery. Fine as "keeps running while moved", but the boards will really need USB power (or a bigger battery).
 - Clear test messages from the server (and any test drawings) right before the boards go online:
   `npx wrangler kv key delete --binding MSGS --remote log` (leave the `seq` key alone).
-- Print a one-page setup card for the box (plug in, join "TobiaTalk" Wi-Fi, pick Wi-Fi + password + name, Save;
-  hold PWR 5 s to redo it; BOOT tap sends the icon, triple-tap PWR changes it).
+- Print the setup card, one per box: `docs/setup-card.pdf` (source `docs/setup-card.html`; re-make the PDF with Edge
+  `--headless --print-to-pdf`). Check first that BOOT/PWR are named right for the real boards and that the battery line
+  ("a few hours") fits the batteries that ship.
+- History now holds 10 messages (`HIST_MAX`): compiled, not yet flashed or tried on a board.
 - Flash every remaining board (the 3000 mAh board and the other touch boards) with the current firmware. The no-battery
   non-touch board (COM7) is flashed with `-DBATTERY_INSTALLED=0`; any other board without a battery needs that too
   (`arduino-cli compile --clean --build-property "compiler.cpp.extra_flags=-DBATTERY_INSTALLED=0"`), or give it a battery.

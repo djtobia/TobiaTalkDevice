@@ -1,7 +1,7 @@
 // TobiaTalk app logic.
 //  BOOT hold  : record a voice message (min 5 s, max 15 s), release to send
 //  BOOT tap   : send a heart (in history view: replay the shown message)
-//  PWR tap    : play the waiting message, else browse the last 5 messages
+//  PWR tap    : play the waiting message, else browse the last 10 messages
 //  PWR x3     : pick the quick-send icon (PWR next, BOOT save)
 //  PWR 5 s    : Wi-Fi / name setup portal
 // Other boards poll the relay; new messages blink the LED.
@@ -163,7 +163,8 @@ static View view_return = V_IDLE;         // where leaving a received drawing go
 static uint32_t draw_last_input = 0;
 static bool draw_has_ink = false;
 static bool draw_hint_gone = false;       // the "BOOT: send / PWR: clear" hint is hidden (after the first stroke)
-static Msg hist[5];                     // newest first
+#define HIST_MAX 10                     // how many messages from other boards history shows (server keeps 50, returns up to 20)
+static Msg hist[HIST_MAX];              // newest first
 static int hist_n = 0, hist_i = 0;
 static uint32_t hist_fetched = 0, view_deadline = 0;
 
@@ -415,7 +416,7 @@ static int fetch_history()
   WiFiClientSecure tls;
   HTTPClient http;
   // The server leaves out this board's own messages, so history only shows what others sent.
-  if (!begin_request(http, tls, "/messages?last=5&exclude=" + name_param())) return 0;
+  if (!begin_request(http, tls, "/messages?last=" + String(HIST_MAX) + "&exclude=" + name_param())) return 0;
   if (http.GET() != 200) { http.end(); return 0; }
   JsonDocument doc;
   DeserializationError err = deserializeJson(doc, http.getString());
@@ -423,7 +424,7 @@ static int fetch_history()
   if (err) return 0;
   JsonArray arr = doc["messages"].as<JsonArray>();
   int n = 0;
-  for (int i = (int)arr.size() - 1; i >= 0 && n < 5; i--) {   // server is oldest-first
+  for (int i = (int)arr.size() - 1; i >= 0 && n < HIST_MAX; i--) {   // server is oldest-first
     JsonObject m = arr[i];
     hist[n].id = m["id"];
     strlcpy(hist[n].from, m["from"] | "Someone", sizeof(hist[n].from));
