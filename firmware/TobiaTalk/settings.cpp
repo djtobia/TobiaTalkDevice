@@ -24,3 +24,37 @@ void settings_save(const Settings &s)
   p.putString("icon", s.icon);
   p.end();
 }
+
+bool emoji_load(uint8_t *out)
+{
+  Preferences p;
+  p.begin("tobiatalk", true);
+  bool ok = p.getBytes("emoji", out, EMOJI_BYTES) == EMOJI_BYTES;
+  p.end();
+  return ok;
+}
+
+void emoji_save(const uint8_t *in)
+{
+  Preferences p;
+  p.begin("tobiatalk", false);
+  p.putBytes("emoji", in, EMOJI_BYTES);
+  p.end();
+}
+
+bool emoji_dirty()
+{
+  Preferences p;
+  p.begin("tobiatalk", true);
+  bool d = p.getBool("emojidirty", false);
+  p.end();
+  return d;
+}
+
+void emoji_set_dirty(bool d)
+{
+  Preferences p;
+  p.begin("tobiatalk", false);
+  p.putBool("emojidirty", d);
+  p.end();
+}

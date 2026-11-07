@@ -8,8 +8,12 @@ from the same 5 V and sends it colour data over the USB cable's **D+ wire**, so 
 - **CC1 and CC2 each have 5.1 k to ground**: the board is a plain power *sink*. Any USB-C source that presents Rp
   on CC will power it. The SBU pins are not connected.
 - VBUS -> diode -> VSYS -> charger chip. Nothing else is on the USB connector.
-- The 2 x 6 header also exposes IO19, IO20, IO1, IO2, IO3 (free), IO43/IO44, IO47/IO48 (I2C, in use), 3V3, GND, VSYS,
-  if a wire to the board is ever preferred.
+- The 2 x 6 header (J1) on the back, from the schematic (odd pins left column, even pins right column):
+  1 GP1, 2 **VSYS**, 3 GP2, 4 3V3, 5 GP3, 6 GND, 7 GP19 (USB D-), 8 GP48 (I2C), 9 GP20 (USB D+), 10 GP47 (I2C), 11 GP43, 12 GP44.
+  Ring wiring from the header: power = **VSYS (pin 2)**, ground = GND (pin 6), data = **GP1 (pin 1)** or GP2 (pin 3).
+  GP3 is the board's own LED (`LED_PIN 3`): don't use it. VSYS is the board's system rail (about 4.5-5 V on USB, battery
+  voltage on battery); 3V3 cannot supply a ring. Check with a meter against GND before connecting. The current VSYS can
+  supply is not confirmed.
 
 ## Parts
 | Part | Notes |

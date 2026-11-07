@@ -90,8 +90,21 @@ for (const name of ["smile", "star", "sun", "moon", "tree"]) {
 assert.equal((await call("/send?from=Mom&type=icon&icon=skull", { method: "POST" })).status, 400);   // not in the pack
 assert.equal((await call("/send?from=Mom&type=icon", { method: "POST" })).status, 400);             // no icon given
 assert.equal((await call("/send?from=Mom&type=icon&icon=heart", { method: "POST" })).status, 400);  // heart is type=heart
+
+// ---- personal emoji: one 700-byte picture per person, a new one overwrites the old ----
+assert.equal((await call("/emoji?name=Mom")).status, 404);                                          // none drawn yet
+assert.equal((await call("/emoji?name=Mom", { method: "POST", body: new Uint8Array(699) })).status, 400);
+assert.equal((await call("/emoji?name=Mom", { method: "POST", body: new Uint8Array(701) })).status, 400);
+const e1 = new Uint8Array(700).fill(0x3c), e2 = new Uint8Array(700).fill(0xc3);
+assert.equal((await call("/emoji?name=Mom", { method: "POST", body: e1 })).status, 200);
+assert.deepEqual(new Uint8Array(await (await call("/emoji?name=mom")).arrayBuffer()), e1);          // name is case-insensitive
+assert.equal((await call("/emoji?name=Dad")).status, 404);                                          // per person
+assert.equal((await call("/emoji?name=Mom", { method: "POST", body: e2 })).status, 200);
+assert.deepEqual(new Uint8Array(await (await call("/emoji?name=Mom")).arrayBuffer()), e2);          // overwritten
 const lastIcon = (await (await call("/messages?last=1")).json()).messages[0];
 assert.deepEqual([lastIcon.type, lastIcon.icon], ["icon", "tree"]);
+const ce = await (await call("/send?from=Mom&type=icon&icon=custom", { method: "POST" })).json();
+assert.deepEqual([ce.type, ce.icon], ["icon", "custom"]);
 
 // ---- firmware updates ----
 const admin = (path, init = {}, key = "adm") =>

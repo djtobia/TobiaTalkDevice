@@ -1,5 +1,5 @@
 // Family voice relay. Boards POST recorded audio (raw 16 kHz, 16-bit, mono PCM)
-// or a quick-send picture, a "heart" or an "icon" (smile, star, ...; no audio). Every board polls GET /messages?since=<id> for new
+// or a quick-send picture, a "heart" or an "icon" (smile, star, ..., or "custom" = the sender's own drawing from /emoji; no audio). Every board polls GET /messages?since=<id> for new
 // ones, GET /messages?last=N for history, and fetches audio with GET /audio?id=.
 // The same poll tells a board when a newer signed firmware is available.
 // Transcription is intentionally not here yet.
@@ -10,6 +10,9 @@ const MAX_SECONDS = 20;
 const MAX_KEPT = 50;
 const DRAWING_BYTES = 200 * 200 / 8;   // a 200x200 drawing, 1 bit per pixel, row-major, MSB first, 1 = black
 const ICONS = ["smile", "star", "sun", "moon", "tree"];   // the icon pack (besides "heart", which is its own message type)
+const EMOJI_BYTES = 80 * 70 / 8;   // a person's own quick-send picture: 80x70, 1 bit per pixel, row-major, MSB first, 1 = black
+const cleanName = (n) => (n || "Someone").replace(/[^\w .'-]/g, "").slice(0, 20) || "Someone";
+const emojiKey = (n) => `emoji:${cleanName(n).toLowerCase()}`;   // one per person (by name); a new one overwrites the old
 const AUDIO_TTL = 7 * 24 * 3600; // audio expires after a week
 const MAX_FIRMWARE_BYTES = 2 * 1024 * 1024; // app slot is 1.9 MB + 512 B signature
 const MIN_FIRMWARE_BYTES = 100 * 1024;
@@ -127,14 +130,31 @@ export default {
       });
     }
 
+    // One personal quick-send picture per person. POST replaces it, GET fetches it (404 if they never drew one).
+    if (url.pathname === "/emoji" && req.method === "POST") {
+      const bits = await req.arrayBuffer();
+      if (bits.byteLength !== EMOJI_BYTES) return json({ error: `emoji must be exactly ${EMOJI_BYTES} bytes (80x70, 1 bit per pixel)` }, 400);
+      await env.MSGS.put(emojiKey(url.searchParams.get("name")), bits);
+      return json({ ok: true });
+    }
+    if (url.pathname === "/emoji" && req.method === "GET") {
+      const bits = await env.MSGS.get(emojiKey(url.searchParams.get("name")), "arrayBuffer");
+      if (!bits) return json({ error: "none" }, 404);
+      return new Response(bits, {
+        headers: { "content-type": "application/octet-stream", "content-length": String(bits.byteLength) },
+      });
+    }
+
     if (req.method === "POST" && url.pathname === "/send") {
-      const from = (url.searchParams.get("from") || "Someone").replace(/[^\w .'-]/g, "").slice(0, 20) || "Someone";
+      const from = cleanName(url.searchParams.get("from"));
       const wanted = url.searchParams.get("type");
       const type = ["heart", "icon", "text", "drawing"].includes(wanted) ? wanted : "voice";
       const voice = type === "voice";
       // A quick-send picture from the icon pack. "heart" stays its own type so boards from before the pack still understand it.
       const icon = url.searchParams.get("icon");
-      if (type === "icon" && !ICONS.includes(icon)) return json({ error: `icon must be one of ${ICONS.join(", ")}` }, 400);
+      if (type === "icon" && !ICONS.includes(icon) && icon !== "custom") {
+        return json({ error: `icon must be one of ${ICONS.join(", ")}, custom` }, 400);
+      }
       const pcm = await req.arrayBuffer();
       if (type === "drawing" && pcm.byteLength !== DRAWING_BYTES) {
         return json({ error: `drawing must be exactly ${DRAWING_BYTES} bytes (200x200, 1 bit per pixel)` }, 400);

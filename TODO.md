@@ -21,6 +21,11 @@ firmware update. Drawing is switched off (`DRAWING_ENABLED 0`).
   chip's I2C bus, which audio power saving switches off. A single PWR tap on the home screen now waits ~0.45 s (to see if
   two more follow). Setup page prefills name/icon and can keep the current Wi-Fi. Server accepts `type=icon`; boards from
   before the pack show the new icons as a failed voice message, so every board needs this firmware before shipping.
+- Own quick-send drawing: draw it on the setup page (80x70 pad, thin/medium/thick pen); stored on the board and uploaded to the server
+  (`POST/GET /emoji?name=`, one per person by name, overwritten on a new save). It is the 7th item in the PWR x3 picker and goes out as
+  `type=icon&icon=custom`; receivers fetch the sender's picture. Tested between two boards. Older firmware shows a heart.
+  Touch is completely off (`g_has_touch = DRAWING_ENABLED && touch_init()`); set `DRAWING_ENABLED 1` and ship an update to bring it back.
+  Builds: `tools/build.sh [batt|nobatt|both] [clean]` (cached per variant, ~1 min incremental).
 - CPU at 80 MHz, 240 MHz only during server requests (`CPU_MHZ`, `CpuBoost` in `user_app.cpp`). USB meter, battery full,
   touch board idle: 53 mA (blips ~100 mA) vs 81 mA (blips 134 mA) at 240 MHz. About 7 h on the 400 mAh battery.
 - Remote firmware updates (OTA): signed images, separate admin password, staged rollout, automatic rollback,
@@ -42,7 +47,7 @@ firmware update. Drawing is switched off (`DRAWING_ENABLED 0`).
 - Print the setup card, one per box: `docs/setup-card.pdf` (source `docs/setup-card.html`; re-make the PDF with Edge
   `--headless --print-to-pdf`). Check first that BOOT/PWR are named right for the real boards and that the battery line
   ("a few hours") fits the batteries that ship.
-- History now holds 10 messages (`HIST_MAX`): compiled, not yet flashed or tried on a board.
+- History holds 10 messages (`HIST_MAX`), flashed on the test boards.
 - Flash every remaining board (the 3000 mAh board and the other touch boards) with the current firmware. The no-battery
   non-touch board (COM7) is flashed with `-DBATTERY_INSTALLED=0`; any other board without a battery needs that too
   (`arduino-cli compile --clean --build-property "compiler.cpp.extra_flags=-DBATTERY_INSTALLED=0"`), or give it a battery.

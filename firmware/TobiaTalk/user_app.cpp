@@ -90,15 +90,22 @@ static lv_obj_t *off_label = NULL;      // "OFF" tag, bottom-left: drawn just be
 static lv_obj_t *foot_label = NULL;     // small line at the bottom of the screen
 static lv_obj_t *corner_label = NULL;   // small tag in the top-right corner (firmware version)
 // ICON_HEART onward is the quick-send icon pack, in the same order as QUICK_IDS and the setup page's list.
-enum Icon { ICON_NONE, ICON_ENVELOPE, ICON_HEART, ICON_SMILE, ICON_STAR, ICON_SUN, ICON_MOON, ICON_TREE };
+// ICON_CUSTOM is the picture the user drew on the setup page (kept only on this board; see g_emoji).
+// ICON_PEER is somebody else's own drawing, fetched from the server into g_peer_emoji when their message arrives.
+enum Icon { ICON_NONE, ICON_ENVELOPE, ICON_HEART, ICON_SMILE, ICON_STAR, ICON_SUN, ICON_MOON, ICON_TREE, ICON_CUSTOM, ICON_PEER };
+static uint8_t g_peer_emoji[EMOJI_BYTES];
+static char g_peer_name[24] = "";       // whose picture g_peer_emoji holds ("" = nobody's)
+static uint8_t g_emoji[EMOJI_BYTES];    // the user's own drawing: 80x70, 1 bit per pixel, 1 = black
+static bool g_has_emoji = false;
 static const char *const QUICK_IDS[] = {"heart", "smile", "star", "sun", "moon", "tree"};
 static const char *const QUICK_CAPTIONS[] = {"sent a heart", "sent a smile", "sent a star", "Good morning", "Good night", "Merry Xmas"};
 static const int QUICK_COUNT = sizeof(QUICK_IDS) / sizeof(QUICK_IDS[0]);
-static const char *quick_id(Icon i) { return QUICK_IDS[(int)i - ICON_HEART]; }
-static const char *quick_caption(Icon i) { return QUICK_CAPTIONS[(int)i - ICON_HEART]; }
+static const char *quick_id(Icon i) { return i == ICON_CUSTOM ? "my drawing" : i == ICON_PEER ? "drawing" : QUICK_IDS[(int)i - ICON_HEART]; }
+static const char *quick_caption(Icon i) { return i == ICON_CUSTOM ? "my drawing" : i == ICON_PEER ? "sent a picture" : QUICK_CAPTIONS[(int)i - ICON_HEART]; }
 static Icon quick_from_id(const char *id)   // unknown or missing names (a newer pack) show as the heart
 {
   for (int k = 0; k < QUICK_COUNT; k++) if (strcmp(id, QUICK_IDS[k]) == 0) return (Icon)(ICON_HEART + k);
+  if (strcmp(id, "custom") == 0) return ICON_PEER;   // the sender's own drawing (our own choice is fixed up at boot)
   return ICON_HEART;
 }
 // What kind of message is this? ICON_NONE for voice and drawings.
@@ -208,6 +215,12 @@ static bool quick_pixel(Icon icon, int px, int py, const float (*star)[2])
       return in_poly(px, py, t1, 3) || in_poly(px, py, t2, 3) || in_poly(px, py, t3, 3) ||
              (px >= 34 && px <= 45 && py >= 58 && py <= 68);
     }
+    case ICON_CUSTOM:
+    case ICON_PEER: {
+      if (px < 0 || px >= EMOJI_W || py < 0 || py >= EMOJI_H) return false;
+      const uint8_t *src = icon == ICON_CUSTOM ? g_emoji : g_peer_emoji;
+      return src[(py * EMOJI_W + px) / 8] & (0x80 >> ((py * EMOJI_W + px) & 7));
+    }
     default:
       return false;
   }
@@ -225,7 +238,7 @@ static void star_points(float (*star)[2])   // five points: outer radius 35, inn
 static void paint_quick(Icon icon)       // call with the LVGL lock held
 {
   static Icon painted = ICON_NONE;
-  if (painted == icon) return;
+  if (painted == icon && icon != ICON_PEER) return;   // a peer's picture changes under the same icon id
   painted = icon;
   float star[10][2];
   star_points(star);
@@ -280,6 +293,7 @@ static bool online() { return WiFi.status() == WL_CONNECTED; }
 
 static bool g_offline = false;          // Wi-Fi has been down long enough to tell the user
 
+static bool peer_emoji_load(const char *who, bool force);   // defined with the other server calls below
 // The "send a message" screen: where every action returns to.
 static void show_idle()
 {
@@ -289,6 +303,7 @@ static void show_idle()
   if (g_offline) {                       // stays up until Wi-Fi is back, whatever else was on screen
     set_status("No WiFi", "Hold PWR 5s", ICON_NONE, "to set up WiFi");
   } else if (g_pending_id && g_pending_icon != ICON_NONE) {
+    if (g_pending_icon == ICON_PEER && !peer_emoji_load(g_pending_from, false)) g_pending_icon = ICON_HEART;
     set_status(g_pending_from, quick_caption(g_pending_icon), g_pending_icon);
   } else if (g_pending_id && g_pending_drawing) {
     snprintf(buf, sizeof(buf), "from %s", g_pending_from);
@@ -372,6 +387,43 @@ static bool begin_request(HTTPClient &http, WiFiClientSecure &tls, const String 
   return true;
 }
 
+// Sends our own drawing to the server (one per person, stored under our name; a new one replaces the old).
+static bool emoji_upload()
+{
+  CpuBoost boost;
+  if (!online() || !g_has_emoji) return false;
+  WiFiClientSecure tls;
+  HTTPClient http;
+  if (!begin_request(http, tls, "/emoji?name=" + name_param())) return false;
+  http.addHeader("content-type", "application/octet-stream");
+  uint8_t copy[EMOJI_BYTES];
+  memcpy(copy, g_emoji, EMOJI_BYTES);
+  int code = http.POST(copy, EMOJI_BYTES);
+  http.end();
+  if (code == 200) emoji_set_dirty(false);
+  return code == 200;
+}
+
+// Makes g_peer_emoji hold `who`'s picture. force: fetch again even if we already have that person's.
+static bool peer_emoji_load(const char *who, bool force)
+{
+  if (!force && strcmp(g_peer_name, who) == 0) return true;
+  CpuBoost boost;
+  g_peer_name[0] = 0;
+  if (!online()) return false;
+  WiFiClientSecure tls;
+  HTTPClient http;
+  String n = who;
+  n.replace(" ", "%20");
+  if (!begin_request(http, tls, "/emoji?name=" + n)) return false;
+  if (http.GET() != 200 || http.getSize() != EMOJI_BYTES) { http.end(); return false; }
+  int got = http.getStreamPtr()->readBytes(g_peer_emoji, EMOJI_BYTES);
+  http.end();
+  if (got != EMOJI_BYTES) return false;
+  strlcpy(g_peer_name, who, sizeof(g_peer_name));
+  return true;
+}
+
 static void poll_messages()
 {
   CpuBoost boost;
@@ -397,6 +449,7 @@ static void poll_messages()
     if (!g_first_poll && g_set.name != from) {   // skip history and our own messages
       g_pending_id = id;
       g_pending_icon = quick_from_msg(m);
+      if (g_pending_icon == ICON_PEER && !peer_emoji_load(from, true)) g_pending_icon = ICON_HEART;   // couldn't get it: show a heart
       g_pending_drawing = strcmp(m["type"] | "voice", "drawing") == 0;
       strlcpy(g_pending_from, from, sizeof(g_pending_from));
       changed = true;
@@ -424,6 +477,7 @@ static int fetch_history()
   if (err) return 0;
   JsonArray arr = doc["messages"].as<JsonArray>();
   int n = 0;
+  g_peer_name[0] = 0;                              // pictures may have changed since: fetch again when shown
   for (int i = (int)arr.size() - 1; i >= 0 && n < HIST_MAX; i--) {   // server is oldest-first
     JsonObject m = arr[i];
     hist[n].id = m["id"];
@@ -444,7 +498,9 @@ static void show_history()
   char age[16], bottom[32];
   format_age(age, sizeof(age), m.age + (millis() - hist_fetched) / 1000);
   snprintf(bottom, sizeof(bottom), "%s %d/%d", age, hist_i + 1, hist_n);
-  set_status(m.from, bottom, m.icon,
+  Icon shown = m.icon;
+  if (shown == ICON_PEER && !peer_emoji_load(m.from, false)) shown = ICON_HEART;
+  set_status(m.from, bottom, shown,
              m.icon != ICON_NONE ? NULL : m.drawing ? "Hold PWR for 3 seconds\nto view" : "Hold PWR for 3 seconds\nto play");
   view_deadline = millis() + 10000;
 }
@@ -553,23 +609,29 @@ static void exit_draw()                   // leaves drawing mode without sending
 // ---- quick-send icon picker: all six icons small in a 3x2 grid on the full-screen canvas, the chosen one framed ----
 // Buttons only, so it works on every board: PWR moves the frame, BOOT saves the choice, PWR + BOOT cancels.
 // (The touch chip shares the audio chip's I2C bus, which audio power saving switches off, so touch is not used here.)
+static int pick_count() { return QUICK_COUNT + (g_has_emoji ? 1 : 0); }   // the pack, plus the user's own drawing if any
+
 static void paint_picker()                // call with the LVGL lock held
 {
-  const float scale = 0.65f;              // each 80x70 icon is drawn 52x45 inside a 64x70 cell
+  // The six pack icons sit in a 3x2 grid (64 px cells). With the user's own drawing as a seventh, 4x2 (50 px cells).
+  const int n = pick_count(), cols = n > 6 ? 4 : 3, cw = cols == 3 ? 64 : 50;
+  const float scale = (cw - 12) / 80.0f;  // each 80x70 icon is drawn (cw-12) wide inside its cell
+  const int iw = cw - 12, ih = (int)(70 * scale);
   float star[10][2];
   star_points(star);
   for (int i = 0; i < DRAW_W * DRAW_H; i++) draw_buf[i].full = 0xFFFF;
-  for (int k = 0; k < QUICK_COUNT; k++) {
-    int cx = 4 + (k % 3) * 64, cy = 30 + (k / 3) * 70;
-    for (int dy = 0; dy < 45; dy++)
-      for (int dx = 0; dx < 52; dx++) {
+  for (int k = 0; k < n; k++) {
+    int cx = (DRAW_W - cols * cw) / 2 + (k % cols) * cw, cy = 30 + (k / cols) * 70;
+    int oy = cy + (70 - ih) / 2;
+    for (int dy = 0; dy < ih; dy++)
+      for (int dx = 0; dx < iw; dx++) {
         int sx = min(79, (int)(dx / scale)), sy = min(69, (int)(dy / scale));
-        if (quick_pixel((Icon)(ICON_HEART + k), sx, sy, (const float (*)[2])star)) draw_buf[(cy + 12 + dy) * DRAW_W + cx + 6 + dx].full = 0x0000;
+        if (quick_pixel((Icon)(ICON_HEART + k), sx, sy, (const float (*)[2])star)) draw_buf[(oy + dy) * DRAW_W + cx + 6 + dx].full = 0x0000;
       }
     if (k == pick_sel)                    // 3 px frame, inset 1 px from the cell edge
       for (int y = cy + 1; y <= cy + 68; y++)
-        for (int x = cx + 1; x <= cx + 62; x++)
-          if (x < cx + 4 || x > cx + 59 || y < cy + 4 || y > cy + 65) draw_buf[y * DRAW_W + x].full = 0x0000;
+        for (int x = cx + 1; x <= cx + cw - 2; x++)
+          if (x < cx + 4 || x > cx + cw - 5 || y < cy + 4 || y > cy + 65) draw_buf[y * DRAW_W + x].full = 0x0000;
   }
 }
 
@@ -580,7 +642,7 @@ static void show_picker()
   if (example_lvgl_lock(-1)) {
     paint_picker();
     char title[32];
-    snprintf(title, sizeof(title), "Quick send: %s", QUICK_IDS[pick_sel]);
+    snprintf(title, sizeof(title), "Quick send: %s", quick_id((Icon)(ICON_HEART + pick_sel)));
     lv_label_set_text(view_label, title);
     lv_label_set_text(draw_hint, "PWR: next   BOOT: pick");
     lv_obj_clear_flag(draw_canvas, LV_OBJ_FLAG_HIDDEN);
@@ -601,7 +663,7 @@ static void enter_picker()
 static void save_pick()                   // BOOT in the picker: remember the icon (survives restarts), confirm, go home
 {
   g_my_icon = (Icon)(ICON_HEART + pick_sel);
-  g_set.icon = QUICK_IDS[pick_sel];
+  g_set.icon = g_my_icon == ICON_CUSTOM ? "custom" : QUICK_IDS[pick_sel];
   settings_save(g_set);
   set_status("Saved", quick_id(g_my_icon), g_my_icon);
   vTaskDelay(pdMS_TO_TICKS(1800));
@@ -664,12 +726,10 @@ static void exit_view()                   // back from a received drawing
   else show_idle();
 }
 
-static bool send_drawing()
+static bool post_drawing(uint8_t *bits)   // sends a 5000-byte drawing
 {
   CpuBoost boost;
   if (!online()) return false;
-  uint8_t bits[DRAW_BYTES];
-  drawing_pack(bits);
   WiFiClientSecure tls;
   HTTPClient http;
   String path = "/send?type=drawing&from=" + name_param();
@@ -680,6 +740,13 @@ static bool send_drawing()
   g_active_until = millis() + ACTIVE_WINDOW_MS;
   battery_note_activity();
   return code == 200;
+}
+
+static bool send_drawing()
+{
+  uint8_t bits[DRAW_BYTES];
+  drawing_pack(bits);
+  return post_drawing(bits);
 }
 
 // The audio chip and speaker amplifier are only powered while recording or playing: switched off they
@@ -755,6 +822,7 @@ static bool send_message(size_t samples, Icon icon = ICON_NONE)
   String path = "/send?from=" + g_set.name;
   path.replace(" ", "%20");
   if (icon == ICON_HEART) path += "&type=heart";          // the heart keeps its own type: boards from before the pack know it
+  else if (icon == ICON_CUSTOM) path += "&type=icon&icon=custom";    // the server holds our picture (see emoji_upload)
   else if (icon != ICON_NONE) path += String("&type=icon&icon=") + quick_id(icon);
   if (!begin_request(http, tls, path)) return false;
   http.addHeader("content-type", "application/octet-stream");
@@ -848,6 +916,7 @@ static void on_boot_tap()
     return;
   }
   set_status("Sending", quick_id(g_my_icon), g_my_icon);
+  if (g_my_icon == ICON_CUSTOM && emoji_dirty()) emoji_upload();   // make sure the server has the latest picture first
   bool ok = send_message(0, g_my_icon);
   set_status(ok ? "Sent" : "Failed", ok ? quick_id(g_my_icon) : online() ? "Try again" : "No WiFi", ok ? g_my_icon : ICON_NONE);
   vTaskDelay(pdMS_TO_TICKS(2500));
@@ -861,7 +930,7 @@ static void on_pwr_short()
     return;
   }
   if (view == V_PICK) {                  // icon picker: PWR moves the frame to the next icon
-    pick_sel = (pick_sel + 1) % QUICK_COUNT;
+    pick_sel = (pick_sel + 1) % pick_count();
     show_picker();
     return;
   }
@@ -1118,7 +1187,9 @@ static void handle_combo()
 static void app_task(void *arg)
 {
   bool configured = settings_load(g_set);
+  g_has_emoji = emoji_load(g_emoji);
   g_my_icon = quick_from_id(g_set.icon.c_str());
+  if (g_my_icon == ICON_PEER) g_my_icon = g_has_emoji ? ICON_CUSTOM : ICON_HEART;   // "custom" in settings = our own drawing
   if (!configured) {                     // never configured: go straight to setup
     enter_setup();
   }
@@ -1390,6 +1461,7 @@ static void app_task(void *arg)
     bool active = (int32_t)(g_active_until - millis()) > 0;
     // Not while drawing: a server check takes a second or two and would stop the touch chip being read mid-stroke.
     if (view != V_DRAW && millis() - last_poll > (active ? POLL_ACTIVE_MS : POLL_IDLE_MS)) {
+      if (online() && g_has_emoji && emoji_dirty()) emoji_upload();   // retried each poll until it gets through
       if (online()) poll_messages();
       last_poll = millis();
     }
@@ -1442,7 +1514,7 @@ void user_app_init(void)
   in.pin_bit_mask = (1ULL << BOOT_BUTTON_PIN) | (1ULL << PWR_BUTTON_PIN);
   gpio_config(&in);
 
-  g_has_touch = touch_init();            // after the audio codec (they share the I2C bus); false on non-touch boards
+  g_has_touch = DRAWING_ENABLED && touch_init();   // touch is completely off unless drawing is enabled; after the audio codec (they share the I2C bus); false on non-touch boards
   Serial.printf("[touch] %s\n", g_has_touch ? "touch controller found" : "no touch controller");
 }
 
